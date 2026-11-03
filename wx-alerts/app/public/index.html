@@ -36,11 +36,14 @@
   .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:6px 0; }
   .search { width:260px; }
   .quick button { margin-right:6px; }
-  .word { display:none; } tr.open .word { display:table-row; }
+  .word { display:none; } tr.open + tr.word { display:table-row; }
   .word td { background:var(--chip); }
   .word label { display:block; font-size:12.5px; color:var(--muted); margin-top:6px; }
   .word input { width:100%; }
   .expand { cursor:pointer; color:var(--accent); font-size:12.5px; }
+  .lnk { background:none; border:0; color:var(--accent); cursor:pointer; font-size:12px; padding:0 8px 0 0; }
+  .word .from { font-size:12px; color:var(--muted); margin-top:2px; }
+  #lvltab td { vertical-align:top; } #lvltab .t { color:var(--muted); font-size:12.5px; }
   .preview { background:var(--chip); border-radius:8px; padding:10px 12px; margin:8px 0; white-space:pre-wrap; }
   code { background:var(--chip); padding:1px 5px; border-radius:4px; font-size:13px; }
   .vars td { font-size:13.5px; }
@@ -69,7 +72,7 @@
 <main>
   <section id="tab-alerts">
     <div class="card">
-      <p class="hint">Each NWS product is a row; products with tiers (radar indicated / observed / PDS / emergency, considerable / destructive) have one row per tier. The most specific matching tier decides. <b>Announce</b> = speak at home (MQTT) · <b>Push</b> = phone notification to each person whose position is inside the alert · <b>Critical</b> = max-importance channel that breaks through Do Not Disturb. Click a name to give that row its own wording.</p>
+      <p class="hint">Each NWS product is a row; products with tiers (radar indicated / observed / PDS / emergency, considerable / destructive) have one row per tier. The most specific matching tier decides. <b>Announce</b> = speak at home (MQTT) · <b>Push</b> = phone notification to each person whose position is inside the alert · <b>Critical</b> = max-importance channel that breaks through Do Not Disturb. Click a name to see and edit the wording that row will use: each level can have its own text or inherit from its product and then from the default wording.</p>
       <div class="row">
         <input type="text" class="search" id="q" placeholder="Filter products…">
         <span class="quick">
@@ -93,6 +96,12 @@
       <label>Push body</label>
       <textarea id="t-push_body" style="min-height:44px"></textarea>
       <div class="row"><button class="btn sec" id="restore-defaults">Restore defaults</button></div>
+    </div>
+    <div class="card">
+      <h2>Per-level wording</h2>
+      <p class="hint">Levels with their own text. Anything not listed inherits from its product, then from the default wording above. Open any row on the Alerts tab to change it. The wording that ships with the add-on is only a starting point - every line is editable.</p>
+      <table id="lvltab"><tbody></tbody></table>
+      <div class="row"><button class="btn sec" id="reset-levels">Reset every level to the shipped wording</button></div>
     </div>
     <div class="card">
       <h2>Preview</h2>
@@ -153,6 +162,7 @@
 <script>
 (() => {
   const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   // API paths are resolved relative to the page so the panel works both standalone (http://host:7110/)
   // and behind Home Assistant ingress (/api/hassio_ingress/<token>/).
@@ -177,8 +187,28 @@
 
   // ---- alerts table ----
   function rule(key) { return cfg.rules[key] || (cfg.rules[key] = { announce: false, push: false, critical: false }); }
+  // Wording a level actually uses: its own, else its product's, else the default wording.
+  function inherited(l, k) {
+    const b = l.sub ? (cfg.rules[l.base] || {}) : {};
+    return b[k] ? { text: b[k], from: l.base } : { text: cfg.templates[k] || defaults.templates[k], from: 'default wording' };
+  }
+  function wordField(l, r, k, title) {
+    const own = !!r[k], inh = inherited(l, k), shipped = defaults.level_templates[l.key]?.[k];
+    return `<label>${title}</label><input type="text" data-w="${k}" value="${esc(own ? r[k] : inh.text)}" data-inh="${esc(inh.text)}">
+      <div class="from">${own ? 'own wording' : 'inherited from ' + esc(inh.from)} ·
+        ${own ? `<button class="lnk" data-act="inherit" data-w="${k}">use inherited</button>` : ''}
+        ${shipped && shipped !== r[k] ? `<button class="lnk" data-act="shipped" data-w="${k}">shipped wording</button>` : ''}</div>`;
+  }
+  function renderLevelTable() {
+    const tb = $('#lvltab tbody'); tb.innerHTML = '';
+    const rows = levels.filter((l) => { const r = cfg.rules[l.key] || {}; return r.voice || r.push_title || r.push_body; });
+    if (!rows.length) tb.innerHTML = '<tr><td class="t">No level has its own wording; everything uses the default wording.</td></tr>';
+    for (const l of rows) { const r = cfg.rules[l.key]; tb.insertAdjacentHTML('beforeend', `<tr><td><span class="expand" data-goto="${esc(l.key)}">${esc(l.label)}</span></td><td class="t">${r.voice ? '🔊 ' + esc(r.voice) + '<br>' : ''}${r.push_title ? '📱 ' + esc(r.push_title) + (r.push_body ? ' - ' + esc(r.push_body) : '') : (r.push_body ? '📱 ' + esc(r.push_body) : '')}</td></tr>`); }
+  }
   function renderRules() {
     const q = $('#q').value.trim().toLowerCase(), onlyOn = $('#onlyon').checked;
+    const open = new Set($$('#rules tr.open[data-key]:not(.word)').map((t) => t.dataset.key));
+    renderLevelTable();
     const tb = $('#rules tbody'); tb.innerHTML = '';
     const order = ['Warning', 'Watch', 'Advisory', 'Statement', 'Other'];
     for (const cls of order) {
@@ -189,19 +219,33 @@
         const r = rule(l.key);
         tb.insertAdjacentHTML('beforeend', `<tr data-key="${esc(l.key)}" class="${l.sub ? 'sub' : ''}"><td class="name"><span class="expand">${esc(l.label)}</span>${r.voice || r.push_title || r.push_body ? ' <span class="pill">own wording</span>' : ''}</td>
           <td class="c"><input type="checkbox" data-f="announce" ${r.announce ? 'checked' : ''}></td><td class="c"><input type="checkbox" data-f="push" ${r.push ? 'checked' : ''}></td><td class="c"><input type="checkbox" data-f="critical" ${r.critical ? 'checked' : ''}></td></tr>
-          <tr class="word" data-key="${esc(l.key)}"><td colspan="4">
-            <label>Voice wording for ${esc(l.label)} (blank = default)</label><input type="text" data-w="voice" value="${esc(r.voice || '')}" placeholder="${esc(defaults.level_templates[l.key]?.voice || cfg.templates.voice)}">
-            <label>Push title</label><input type="text" data-w="push_title" value="${esc(r.push_title || '')}" placeholder="${esc(defaults.level_templates[l.key]?.push_title || cfg.templates.push_title)}">
-            <label>Push body</label><input type="text" data-w="push_body" value="${esc(r.push_body || '')}" placeholder="${esc(defaults.level_templates[l.key]?.push_body || cfg.templates.push_body)}">
-          </td></tr>`);
+          <tr class="word${open.has(l.key) ? ' open' : ''}" data-key="${esc(l.key)}"><td colspan="4">${wordField(l, r, 'voice', 'Voice announcement')}${wordField(l, r, 'push_title', 'Push title')}${wordField(l, r, 'push_body', 'Push body')}</td></tr>`);
+        if (open.has(l.key)) tb.lastElementChild.previousElementSibling.classList.add('open');
       }
     }
   }
   $('#rules').addEventListener('change', (ev) => {
     const tr = ev.target.closest('tr'); const key = tr.dataset.key; if (!key) return;
     if (ev.target.dataset.f) rule(key)[ev.target.dataset.f] = ev.target.checked;
-    if (ev.target.dataset.w) { const v = ev.target.value.trim(); if (v) rule(key)[ev.target.dataset.w] = v; else delete rule(key)[ev.target.dataset.w]; }
+    if (ev.target.dataset.w) { const v = ev.target.value.trim(); if (v && v !== ev.target.dataset.inh) rule(key)[ev.target.dataset.w] = v; else delete rule(key)[ev.target.dataset.w]; renderRules(); }
     setDirty(true);
+  });
+  $('#rules').addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-act]'); if (!b) return;
+    const key = b.closest('tr').dataset.key, k = b.dataset.w;
+    if (b.dataset.act === 'inherit') delete rule(key)[k]; else rule(key)[k] = defaults.level_templates[key][k];
+    renderRules(); setDirty(true);
+  });
+  $('#lvltab').addEventListener('click', (ev) => {
+    const g = ev.target.dataset.goto; if (!g) return;
+    $('nav [data-tab=alerts]').click(); $('#q').value = ''; renderRules();
+    const tr = $(`#rules tr[data-key="${CSS.escape(g)}"]`); if (tr) { tr.classList.add('open'); tr.nextElementSibling.classList.add('open'); tr.scrollIntoView({ block: 'center' }); }
+  });
+  $('#reset-levels').addEventListener('click', () => {
+    if (!confirm('Replace the wording of every level with the text that ships with the add-on?')) return;
+    for (const l of levels) { const r = cfg.rules[l.key]; if (r) { delete r.voice; delete r.push_title; delete r.push_body; } }
+    for (const [k, t] of Object.entries(defaults.level_templates)) Object.assign(rule(k), t);
+    renderRules(); setDirty(true);
   });
   $('#rules').addEventListener('click', (ev) => { if (ev.target.classList.contains('expand')) ev.target.closest('tr').classList.toggle('open'); });
   $('#q').addEventListener('input', renderRules); $('#onlyon').addEventListener('change', renderRules);
