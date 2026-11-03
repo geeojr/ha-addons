@@ -1,0 +1,35 @@
+name: Evergy Sync
+version: "1.0.0"
+slug: evergy_sync
+description: Hourly electricity usage from Evergy (Opower) into Home Assistant long-term statistics, priced with your TOU rate plans
+url: https://github.com/geeojr/ha-addons/tree/main/evergy-sync
+arch:
+  - amd64
+  - aarch64
+startup: services
+init: false
+homeassistant_api: true
+options:
+  username: ""
+  password: ""
+  run_at: "06:10"
+  run_on_start: true
+  statistic_id: "opower:kcpl_elec_0698970553_energy_consumption"
+  statistic_name: "Evergy Grid"
+  cost_statistic_name: "Evergy Grid cost"
+  rate_entity: "sensor.electricity_rate"
+  account_uuid: ""
+  subdomain: "kcpl"
+  backfill_from: ""
+schema:
+  username: str
+  password: password
+  run_at: match(^([01]\d|2[0-3]):[0-5]\d$)
+  run_on_start: bool
+  statistic_id: str
+  statistic_name: str
+  cost_statistic_name: str
+  rate_entity: str
+  account_uuid: str?
+  subdomain: str
+  backfill_from: match(^(\d{4}-\d{2}-\d{2})?$)?

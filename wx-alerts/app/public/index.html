@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WX Alerts</title>
+<style>
+  :root { color-scheme: light dark;
+    --bg:#fafafa; --card:#fff; --text:#212121; --muted:#6b6b6b; --line:#e3e3e3; --accent:#03a9f4; --accent-ink:#fff; --warn:#c62828; --ok:#2e7d32; --chip:#eef3f8; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111; --card:#1c1c1c; --text:#e1e1e1; --muted:#9e9e9e; --line:#2e2e2e; --accent:#03a9f4; --chip:#262b31; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 Roboto, system-ui, sans-serif; }
+  header { display:flex; align-items:center; gap:14px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--card); position:sticky; top:0; z-index:5; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; font-weight:500; }
+  nav button { background:none; border:0; color:var(--muted); font:inherit; padding:8px 10px; cursor:pointer; border-bottom:2px solid transparent; }
+  nav button[aria-selected="true"] { color:var(--accent); border-color:var(--accent); }
+  .spacer { flex:1; }
+  .btn { background:var(--accent); color:var(--accent-ink); border:0; border-radius:6px; padding:8px 14px; font:inherit; cursor:pointer; }
+  .btn.sec { background:var(--chip); color:var(--text); }
+  .btn:disabled { opacity:.5; cursor:default; }
+  main { padding:16px; max-width:1100px; margin:0 auto; }
+  section[hidden] { display:none; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:14px; }
+  h2 { font-size:16px; font-weight:500; margin:0 0 8px; }
+  p.hint { color:var(--muted); margin:4px 0 10px; font-size:13.5px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--muted); font-weight:500; font-size:12.5px; text-transform:uppercase; letter-spacing:.03em; }
+  td.c, th.c { text-align:center; width:84px; }
+  tr.sub td.name { padding-left:28px; color:var(--text); }
+  tr.sub td.name::before { content:"↳ "; color:var(--muted); }
+  tr.group th { background:var(--chip); color:var(--text); text-transform:none; font-size:14px; letter-spacing:0; padding:8px; }
+  input[type=checkbox] { width:18px; height:18px; accent-color:var(--accent); }
+  input[type=text], input[type=number], select, textarea { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
+  textarea { width:100%; min-height:64px; resize:vertical; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:6px 0; }
+  .search { width:260px; }
+  .quick button { margin-right:6px; }
+  .word { display:none; } tr.open .word { display:table-row; }
+  .word td { background:var(--chip); }
+  .word label { display:block; font-size:12.5px; color:var(--muted); margin-top:6px; }
+  .word input { width:100%; }
+  .expand { cursor:pointer; color:var(--accent); font-size:12.5px; }
+  .preview { background:var(--chip); border-radius:8px; padding:10px 12px; margin:8px 0; white-space:pre-wrap; }
+  code { background:var(--chip); padding:1px 5px; border-radius:4px; font-size:13px; }
+  .vars td { font-size:13.5px; }
+  .log { font-size:13.5px; } .log .meta { color:var(--muted); }
+  .pill { display:inline-block; padding:1px 8px; border-radius:10px; background:var(--chip); font-size:12.5px; margin-right:4px; }
+  .pill.on { background:var(--ok); color:#fff; } .pill.crit { background:var(--warn); color:#fff; }
+  #toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#333; color:#fff; padding:10px 16px; border-radius:8px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  #toast.show { opacity:1; }
+  .dirty { color:var(--warn); font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WX Alerts</h1>
+  <nav role="tablist">
+    <button role="tab" data-tab="alerts" aria-selected="true">Alerts</button>
+    <button role="tab" data-tab="wording">Wording</button>
+    <button role="tab" data-tab="people">People</button>
+    <button role="tab" data-tab="status">Status</button>
+    <button role="tab" data-tab="test">Test</button>
+  </nav>
+  <span class="spacer"></span>
+  <span id="dirty" class="dirty" hidden>unsaved changes</span>
+  <button class="btn" id="save">Save</button>
+</header>
+<main>
+  <section id="tab-alerts">
+    <div class="card">
+      <p class="hint">Each NWS product is a row; products with tiers (radar indicated / observed / PDS / emergency, considerable / destructive) have one row per tier. The most specific matching tier decides. <b>Announce</b> = speak at home (MQTT) · <b>Push</b> = phone notification to each person whose position is inside the alert · <b>Critical</b> = max-importance channel that breaks through Do Not Disturb. Click a name to give that row its own wording.</p>
+      <div class="row">
+        <input type="text" class="search" id="q" placeholder="Filter products…">
+        <span class="quick">
+          <button class="btn sec" data-quick="warnings">All warnings on</button>
+          <button class="btn sec" data-quick="watches">All watches on</button>
+          <button class="btn sec" data-quick="none">Everything off</button>
+        </span>
+        <label><input type="checkbox" id="onlyon"> only enabled</label>
+      </div>
+      <table id="rules"><thead><tr><th>Product / level</th><th class="c">Announce</th><th class="c">Push</th><th class="c">Critical</th></tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+
+  <section id="tab-wording" hidden>
+    <div class="card">
+      <h2>Default wording</h2>
+      <p class="hint">Used for every level that has no wording of its own. <code>{variable}</code>, <code>{variable|fallback}</code>, and <code>[ a section that is dropped if any variable inside is empty]</code>.</p>
+      <label>Voice announcement (home speakers)</label>
+      <textarea id="t-voice"></textarea>
+      <div class="row"><label>Push title <input type="text" id="t-push_title" style="width:280px"></label></div>
+      <label>Push body</label>
+      <textarea id="t-push_body" style="min-height:44px"></textarea>
+      <div class="row"><button class="btn sec" id="restore-defaults">Restore defaults</button></div>
+    </div>
+    <div class="card">
+      <h2>Preview</h2>
+      <div class="row">
+        <label>Sample product <select id="fixture"></select></label>
+        <label>Heard by <select id="pv-where"><option value="home">Home</option></select></label>
+      </div>
+      <div><b id="pv-level"></b></div>
+      <div class="preview" id="pv-voice"></div>
+      <div class="preview" id="pv-push"></div>
+      <details><summary>Variables for this sample</summary><table class="vars" id="pv-vars"></table></details>
+    </div>
+    <div class="card">
+      <h2>Variables</h2>
+      <table class="vars" id="vars"></table>
+    </div>
+  </section>
+
+  <section id="tab-people" hidden>
+    <div class="card">
+      <p class="hint">Who gets a push when <i>their</i> phone position is inside an alert. A person who is home is checked at the home position. People without GPS on their tracker are skipped (shown in Status).</p>
+      <table id="people"><thead><tr><th>Person</th><th>Name used in wording</th><th>Notify service</th><th class="c">Enabled</th><th>Now</th></tr></thead><tbody></tbody></table>
+      <div class="row"><button class="btn sec" id="add-person">Add person from Home Assistant</button></div>
+    </div>
+    <div class="card">
+      <h2>Delivery</h2>
+      <div class="row"><label><input type="checkbox" id="mqtt-enabled"> MQTT for home announcements</label>
+        <label>JSON topic <input type="text" id="mqtt-topic" style="width:180px"></label>
+        <label><input type="checkbox" id="mqtt-legacy"> also publish spoken text to</label><input type="text" id="mqtt-legacy-topic" style="width:160px"></div>
+      <div class="row"><label>Home Assistant event <input type="text" id="ha-event" style="width:140px"></label>
+        <label>Poll every <input type="number" id="poll" min="60" step="30" style="width:80px"> s</label></div>
+      <div class="row"><label>Push channel <input type="text" id="push-channel" style="width:140px"></label>
+        <label>Critical channel <input type="text" id="push-critical" style="width:140px"></label>
+        <label>Tap opens <input type="text" id="push-url" style="width:260px"></label></div>
+    </div>
+  </section>
+
+  <section id="tab-status" hidden>
+    <div class="card"><h2>Last poll</h2><div id="st-last"></div><table id="st-targets"></table></div>
+    <div class="card"><h2>Recent notifications</h2><div class="log" id="st-log"></div></div>
+  </section>
+
+  <section id="tab-test" hidden>
+    <div class="card">
+      <h2>Send a test</h2>
+      <p class="hint">Runs the whole pipeline with a sample product. <b>Dry run</b> only shows what would be sent; a live test really speaks on the speakers / pushes to the phone.</p>
+      <div class="row">
+        <label>Sample <select id="test-fixture"></select></label>
+        <label>Target <select id="test-target"><option value="home">Home</option></select></label>
+        <label><input type="checkbox" id="test-force"> ignore rules (fire even if the level is off)</label>
+      </div>
+      <div class="row"><button class="btn sec" id="test-dry">Dry run</button><button class="btn" id="test-live">Send for real</button><button class="btn sec" id="poll-now">Poll NWS now</button></div>
+      <div class="preview" id="test-out"></div>
+    </div>
+  </section>
+</main>
+<div id="toast"></div>
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  // API paths are resolved relative to the page so the panel works both standalone (http://host:7110/)
+  // and behind Home Assistant ingress (/api/hassio_ingress/<token>/).
+  const api = async (p, body) => {
+    const init = body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {};
+    const r = await fetch(new URL(p.replace(/^\//, ''), document.baseURI), init);
+    let j; try { j = await r.json(); } catch { j = {}; }
+    if (!r.ok) throw new Error(j.error || r.status);
+    return j;
+  };
+  const toast = (m) => { const t = $('#toast'); t.textContent = m; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2500); };
+  let cfg, levels, varsHelp, defaults, ha, dirty = false;
+  const setDirty = (v) => { dirty = v; $('#dirty').hidden = !v; };
+
+  // tabs
+  document.querySelectorAll('nav [role=tab]').forEach((b) => b.addEventListener('click', () => {
+    document.querySelectorAll('nav [role=tab]').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
+    document.querySelectorAll('main > section').forEach((s) => { s.hidden = s.id !== 'tab-' + b.dataset.tab; });
+    if (b.dataset.tab === 'status') loadStatus();
+    if (b.dataset.tab === 'wording') preview();
+  }));
+
+  // ---- alerts table ----
+  function rule(key) { return cfg.rules[key] || (cfg.rules[key] = { announce: false, push: false, critical: false }); }
+  function renderRules() {
+    const q = $('#q').value.trim().toLowerCase(), onlyOn = $('#onlyon').checked;
+    const tb = $('#rules tbody'); tb.innerHTML = '';
+    const order = ['Warning', 'Watch', 'Advisory', 'Statement', 'Other'];
+    for (const cls of order) {
+      const rows = levels.filter((l) => l.class === cls && (!q || l.label.toLowerCase().includes(q) || l.base.toLowerCase().includes(q)) && (!onlyOn || (rule(l.key).announce || rule(l.key).push) || (l.sub && (rule(l.base).announce || rule(l.base).push))));
+      if (!rows.length) continue;
+      tb.insertAdjacentHTML('beforeend', `<tr class="group"><th colspan="4">${cls === 'Other' ? 'Other products' : cls + 's'}</th></tr>`);
+      for (const l of rows) {
+        const r = rule(l.key);
+        tb.insertAdjacentHTML('beforeend', `<tr data-key="${esc(l.key)}" class="${l.sub ? 'sub' : ''}"><td class="name"><span class="expand">${esc(l.label)}</span>${r.voice || r.push_title || r.push_body ? ' <span class="pill">own wording</span>' : ''}</td>
+          <td class="c"><input type="checkbox" data-f="announce" ${r.announce ? 'checked' : ''}></td><td class="c"><input type="checkbox" data-f="push" ${r.push ? 'checked' : ''}></td><td class="c"><input type="checkbox" data-f="critical" ${r.critical ? 'checked' : ''}></td></tr>
+          <tr class="word" data-key="${esc(l.key)}"><td colspan="4">
+            <label>Voice wording for ${esc(l.label)} (blank = default)</label><input type="text" data-w="voice" value="${esc(r.voice || '')}" placeholder="${esc(defaults.level_templates[l.key]?.voice || cfg.templates.voice)}">
+            <label>Push title</label><input type="text" data-w="push_title" value="${esc(r.push_title || '')}" placeholder="${esc(defaults.level_templates[l.key]?.push_title || cfg.templates.push_title)}">
+            <label>Push body</label><input type="text" data-w="push_body" value="${esc(r.push_body || '')}" placeholder="${esc(defaults.level_templates[l.key]?.push_body || cfg.templates.push_body)}">
+          </td></tr>`);
+      }
+    }
+  }
+  $('#rules').addEventListener('change', (ev) => {
+    const tr = ev.target.closest('tr'); const key = tr.dataset.key; if (!key) return;
+    if (ev.target.dataset.f) rule(key)[ev.target.dataset.f] = ev.target.checked;
+    if (ev.target.dataset.w) { const v = ev.target.value.trim(); if (v) rule(key)[ev.target.dataset.w] = v; else delete rule(key)[ev.target.dataset.w]; }
+    setDirty(true);
+  });
+  $('#rules').addEventListener('click', (ev) => { if (ev.target.classList.contains('expand')) ev.target.closest('tr').classList.toggle('open'); });
+  $('#q').addEventListener('input', renderRules); $('#onlyon').addEventListener('change', renderRules);
+  document.querySelectorAll('[data-quick]').forEach((b) => b.addEventListener('click', () => {
+    const q = b.dataset.quick;
+    for (const l of levels) { const r = rule(l.key); if (q === 'none') { r.announce = r.push = false; } else if (q === 'warnings' && l.class === 'Warning') { r.announce = r.push = true; } else if (q === 'watches' && l.class === 'Watch') { r.announce = r.push = true; } }
+    renderRules(); setDirty(true);
+  }));
+
+  // ---- wording ----
+  const tIds = ['voice', 'push_title', 'push_body'];
+  function renderTemplates() { for (const k of tIds) $('#t-' + k).value = cfg.templates[k] || ''; }
+  tIds.forEach((k) => $('#t-' + k).addEventListener('input', () => { cfg.templates[k] = $('#t-' + k).value; setDirty(true); preview(); }));
+  $('#restore-defaults').addEventListener('click', () => { cfg.templates = { ...defaults.templates }; renderTemplates(); setDirty(true); preview(); });
+  async function preview() {
+    const fixture = $('#fixture').value, who = $('#pv-where').value;
+    const p = who === 'home' ? {} : { where: who + "'s location", name: who };
+    const v = await api('/api/preview', { fixture, kind: 'voice', ...p });
+    const vt = await api('/api/preview', { fixture, kind: 'push_title', ...p }); const vb = await api('/api/preview', { fixture, kind: 'push_body', ...p });
+    $('#pv-level').textContent = `Level: ${v.level.label}`;
+    $('#pv-voice').textContent = '🔊 ' + v.text;
+    $('#pv-push').textContent = `📱 ${vt.text}\n${vb.text}`;
+    $('#pv-vars').innerHTML = Object.entries(v.vars).map(([k, val]) => `<tr><td><code>{${esc(k)}}</code></td><td>${esc(String(val).slice(0, 160))}</td></tr>`).join('');
+  }
+  $('#fixture').addEventListener('change', preview); $('#pv-where').addEventListener('change', preview);
+
+  // ---- people ----
+  function renderPeople() {
+    const tb = $('#people tbody'); tb.innerHTML = '';
+    cfg.people.forEach((p, i) => {
+      const now = (ha?.people || []).find((x) => x.entity === p.person);
+      const opts = (ha?.notify_services || [p.notify]).map((s) => `<option ${s === p.notify ? 'selected' : ''}>${esc(s)}</option>`).join('');
+      tb.insertAdjacentHTML('beforeend', `<tr data-i="${i}"><td>${esc(p.person)}</td><td><input type="text" data-p="name" value="${esc(p.name)}" style="width:120px"></td><td><select data-p="notify">${opts}</select></td><td class="c"><input type="checkbox" data-p="enabled" ${p.enabled ? 'checked' : ''}></td><td>${now ? esc(now.state) + (now.gps ? '' : ' · no GPS') : '—'} <button class="btn sec" data-del="${i}" style="padding:2px 8px">remove</button></td></tr>`);
+    });
+    const sel = $('#test-target'); sel.innerHTML = '<option value="home">Home</option>' + cfg.people.map((p) => `<option value="${esc(p.person)}">${esc(p.name)}</option>`).join('');
+    $('#pv-where').innerHTML = '<option value="home">Home</option>' + cfg.people.map((p) => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+  }
+  $('#people').addEventListener('change', (ev) => { const i = +ev.target.closest('tr').dataset.i, k = ev.target.dataset.p; if (!k) return; cfg.people[i][k] = ev.target.type === 'checkbox' ? ev.target.checked : ev.target.value; setDirty(true); });
+  $('#people').addEventListener('click', (ev) => { if (ev.target.dataset.del != null) { cfg.people.splice(+ev.target.dataset.del, 1); renderPeople(); setDirty(true); } });
+  $('#add-person').addEventListener('click', () => {
+    const have = new Set(cfg.people.map((p) => p.person));
+    const cands = (ha?.people || []).filter((p) => !have.has(p.entity));
+    if (!cands.length) return toast('every Home Assistant person is already listed');
+    const pick = prompt('Add which person?\n' + cands.map((p, i) => `${i + 1}. ${p.name} (${p.entity})${p.gps ? '' : ' - no GPS'}`).join('\n'), '1');
+    const c = cands[+pick - 1]; if (!c) return;
+    cfg.people.push({ person: c.entity, name: String(c.name).split(' ')[0], enabled: true, notify: c.suggested_notify || (ha.notify_services[0] || '') });
+    renderPeople(); setDirty(true);
+  });
+  function renderDelivery() {
+    $('#mqtt-enabled').checked = !!cfg.mqtt.enabled; $('#mqtt-topic').value = cfg.mqtt.topic; $('#mqtt-legacy').checked = !!cfg.mqtt.legacy_voice; $('#mqtt-legacy-topic').value = cfg.mqtt.legacy_voice_topic;
+    $('#ha-event').value = cfg.ha_event || ''; $('#poll').value = cfg.poll_seconds; $('#push-channel').value = cfg.push.channel; $('#push-critical').value = cfg.push.critical_channel; $('#push-url').value = cfg.push.url || '';
+  }
+  const bind = (id, fn) => $(id).addEventListener('change', () => { fn($(id)); setDirty(true); });
+  bind('#mqtt-enabled', (e) => cfg.mqtt.enabled = e.checked); bind('#mqtt-topic', (e) => cfg.mqtt.topic = e.value.trim()); bind('#mqtt-legacy', (e) => cfg.mqtt.legacy_voice = e.checked); bind('#mqtt-legacy-topic', (e) => cfg.mqtt.legacy_voice_topic = e.value.trim());
+  bind('#ha-event', (e) => cfg.ha_event = e.value.trim()); bind('#poll', (e) => cfg.poll_seconds = +e.value); bind('#push-channel', (e) => cfg.push.channel = e.value.trim()); bind('#push-critical', (e) => cfg.push.critical_channel = e.value.trim()); bind('#push-url', (e) => cfg.push.url = e.value.trim());
+
+  // ---- status ----
+  async function loadStatus() {
+    const s = await api('/api/status');
+    const L = s.last || {};
+    $('#st-last').innerHTML = L.error ? `<span style="color:var(--warn)">${esc(L.error)}</span> at ${esc(L.at)}` : `${esc(L.at || 'never')} · ${L.requests ?? 0} NWS request(s) · ${L.ms ?? '?'} ms · ${s.primed ? 'armed' : 'priming'} · v${esc(s.version)} up ${Math.round((s.uptime_s || 0) / 60)} min`;
+    $('#st-targets').innerHTML = (L.targets || []).map((t) => `<tr><td><b>${esc(t.name)}</b><br><span class="meta" style="color:var(--muted);font-size:12.5px">${t.skipped ? 'skipped: ' + esc(t.skipped) : t.error ? 'error: ' + esc(t.error) : (t.zone && t.zone !== 'home' ? esc(t.zone) + ' · ' : '') + (t.lat != null ? `${t.lat}, ${t.lon}` : '')}</span></td><td>${(t.active || []).length ? t.active.map((a) => `<span class="pill ${a.wants ? 'on' : ''}">${esc(a.level)}</span> <span style="color:var(--muted);font-size:12.5px">${esc(a.messageType)} · until ${esc(new Date(a.ends).toLocaleString())}</span><br>`).join('') : '<span style="color:var(--muted)">no active alerts</span>'}</td></tr>`).join('');
+    $('#st-log').innerHTML = s.log.length ? s.log.map((e) => e.error ? `<div><span class="meta">${esc(e.at)}</span> <span style="color:var(--warn)">${esc(e.target)}: ${esc(e.error)}</span></div>` : `<div><span class="meta">${esc(e.at)}</span> <b>${esc(e.name)}</b> — ${esc(e.level)} ${e.dry ? '<span class="pill">dry run</span>' : ''}<br><span class="meta">${esc(e.voice)}</span><br><span class="meta">sent: ${esc((e.did || []).join(', ') || 'nothing')}</span></div>`).join('') : '<span style="color:var(--muted)">nothing yet</span>';
+  }
+
+  // ---- test ----
+  async function runTest(dry) {
+    const out = $('#test-out'); out.textContent = '…';
+    try {
+      const r = await api('/api/test', { fixture: $('#test-fixture').value, target: $('#test-target').value, dry, force: $('#test-force').checked });
+      out.textContent = `${dry ? 'DRY RUN' : 'SENT'} · ${r.level}\n🔊 ${r.voice}\n📱 ${r.title}\n${r.body}\n→ ${r.did.join(', ') || (dry ? '(dry run: nothing sent)' : 'nothing — the rule is off for this target')}`;
+    } catch (e) { out.textContent = 'failed: ' + e.message; }
+  }
+  $('#test-dry').addEventListener('click', () => runTest(true));
+  $('#test-live').addEventListener('click', () => { if (confirm('Really announce / push this test?')) runTest(false); });
+  $('#poll-now').addEventListener('click', async () => { $('#test-out').textContent = 'polling…'; const r = await api('/api/poll', {}); $('#test-out').textContent = JSON.stringify(r, null, 1); });
+
+  // ---- save ----
+  $('#save').addEventListener('click', async () => {
+    try { await api('/api/config', { rules: cfg.rules, templates: cfg.templates, people: cfg.people, mqtt: cfg.mqtt, push: cfg.push, ha_event: cfg.ha_event, poll_seconds: cfg.poll_seconds }); setDirty(false); toast('Saved'); renderRules(); }
+    catch (e) { toast('Save failed: ' + e.message); }
+  });
+  window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+  // ---- init ----
+  (async () => {
+    [cfg, { levels, variables: varsHelp, defaults }] = await Promise.all([api('/api/config'), api('/api/levels')]);
+    try { ha = await api('/api/ha'); } catch (e) { toast('Home Assistant unreachable: ' + e.message); }
+    const fx = (await api('/api/preview', { fixture: 'tornadoRadar' })).fixtures;
+    const nice = (k) => k.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase()).replace('Pds', 'PDS').replace('Tstm', 'Thunderstorm');
+    $('#fixture').innerHTML = $('#test-fixture').innerHTML = fx.map((k) => `<option value="${k}">${esc(nice(k))}</option>`).join('');
+    $('#vars').innerHTML = varsHelp.map(([k, h]) => `<tr><td><code>{${esc(k)}}</code></td><td>${esc(h)}</td></tr>`).join('');
+    renderRules(); renderTemplates(); renderPeople(); renderDelivery(); preview();
+  })().catch((e) => toast('load failed: ' + e.message));
+})();
+</script>
+</body>
+</html>

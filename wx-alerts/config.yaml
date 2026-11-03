@@ -1,0 +1,20 @@
+name: WX Alerts
+version: "1.0.0"
+slug: wx_alerts
+description: NWS watch/warning watcher - per-level announce/push rules, templated voice text, pushes people who are inside an alert
+url: https://github.com/geeojr/ha-addons/tree/main/wx-alerts
+arch:
+  - amd64
+  - aarch64
+startup: services
+init: false
+homeassistant_api: true
+ingress: true
+ingress_port: 7110
+panel_icon: mdi:weather-lightning
+panel_title: WX Alerts
+panel_admin: true
+options:
+  log_level: info
+schema:
+  log_level: list(debug|info)

@@ -1,0 +1,14 @@
+{
+  "name": "wx-alerts",
+  "version": "1.0.0",
+  "description": "NWS watch/warning watcher for Home Assistant: per-level rules, templated announcements, per-person push when they are inside an alert",
+  "main": "wx_alerts.js",
+  "private": true,
+  "scripts": {
+    "start": "node wx_alerts.js",
+    "once": "node wx_alerts.js --once",
+    "test": "node --test 'test/*.test.js'"
+  },
+  "engines": { "node": ">=22" },
+  "license": "UNLICENSED"
+}
