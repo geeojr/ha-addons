@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.1.2
+- Re-send the SPC sensors' discovery on every start (so an upgrade or "Refresh outlook now" applies new names/attributes at once).
+
 ## 1.1.1
 - MQTT discovery: use `default_entity_id` (current HA ignores `object_id`) so the sensors are really `sensor.wx_spc_day1_*`; device "SPC day 1 outlook" so friendly names read "SPC day 1 outlook Home".
 

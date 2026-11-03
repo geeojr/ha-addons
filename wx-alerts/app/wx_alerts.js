@@ -181,6 +181,7 @@ async function fire(target, f, level, rule, dry) {
 // against it on every poll, so a person who drives into a risk area is reflected within a poll.
 let outlook = null;                                   // parsed SPC file, kept between polls
 const outlookHttp = { etag: null, modified: null, at: 0 };
+const spcFresh = new Set();                           // targets published by THIS process (restart/upgrade re-sends discovery once)
 const slug = (s) => String(s).replace(/^person\./, '').replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '').toLowerCase() || 'target';
 const spcEntity = (t) => `sensor.${config.spc.entity_prefix}_${slug(t.id)}`;
 async function fetchOutlook() {
@@ -230,10 +231,10 @@ async function spcUpdate(targets) {
       : { ...SPC.levelAt(outlook, t.lat, t.lon), lat: +t.lat.toFixed(3), lon: +t.lon.toFixed(3) };
     const prev = s.levels[t.id];
     const changed = !prev || prev.level !== cur.level || prev.valid !== meta.valid || prev.entity !== spcEntity(t);
-    const stale = !prev || Date.now() - Date.parse(prev.published_at || 0) > 30 * 60000; // re-publish now and then so a retained value is never ancient
+    const stale = !prev || !spcFresh.has(t.id) || Date.now() - Date.parse(prev.published_at || 0) > 30 * 60000; // re-publish now and then so a retained value is never ancient
     if (!changed && !stale) continue;
     try {
-      const entity = await publishSpc(t, cur, meta);
+      const entity = await publishSpc(t, cur, meta); spcFresh.add(t.id);
       s.levels[t.id] = { ...cur, name: t.name, entity, valid: meta.valid, published_at: new Date().toISOString() };
       if (changed) log(`SPC ${t.name}: day 1 level ${cur.level} ${cur.label} -> ${entity}${prev ? ` (was ${prev.level})` : ''}`);
       if (prev && prev.level !== cur.level && config.spc.ha_event) await haEvent(config.spc.ha_event, { target: t.id, name: t.name, entity, level: cur.level, code: cur.code, label: cur.label, previous: prev.level, valid: meta.valid, expire: meta.expire });
@@ -306,7 +307,7 @@ async function api(req, res, url) {
     config.spc.entity_prefix = slug(config.spc.entity_prefix || DEFAULT_CONFIG.spc.entity_prefix);
     saveConfig(); schedule(); return json(res, 200, { ok: true });
   }
-  if (req.method === 'POST' && p === '/api/spc/refresh') { outlookHttp.at = 0; await poll(); return json(res, 200, state.spc || {}); }
+  if (req.method === 'POST' && p === '/api/spc/refresh') { outlookHttp.at = 0; spcFresh.clear(); await poll(); return json(res, 200, state.spc || {}); }
   if (req.method === 'GET' && p === '/api/levels') return json(res, 200, { levels: T.allLevels(await loadEventTypes()), variables: T.VARIABLE_HELP, defaults: { templates: T.DEFAULT_TEMPLATES, level_templates: T.DEFAULT_LEVEL_TEMPLATES } });
   if (req.method === 'GET' && p === '/api/status') return json(res, 200, { last: state.last, primed: state.primed, log: state.log.slice(0, 50), spc: state.spc, version: VERSION, uptime_s: Math.round(process.uptime()) });
   if (req.method === 'GET' && p === '/api/ha') {
