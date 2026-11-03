@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.1.1
+- MQTT discovery: use `default_entity_id` (current HA ignores `object_id`) so the sensors are really `sensor.wx_spc_day1_*`; device "SPC day 1 outlook" so friendly names read "SPC day 1 outlook Home".
+
 ## 1.1.0
 - SPC day 1 categorical outlook as a sensor per target (`sensor.wx_spc_day1_home`, `sensor.wx_spc_day1_<person>`): state 0 none … 6 high risk, label/validity/forecaster as attributes, `wx_spc` event on change. MQTT discovery (persistent) or states API. Shown on the Status tab for every target; settings on the People tab.
 

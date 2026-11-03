@@ -203,8 +203,10 @@ async function publishSpc(t, cur, meta) {
     levels: SPC.LEVELS.map((l) => `${l.level}=${l.label}`).join(', ') };
   if (config.mqtt.enabled) {
     const stateTopic = `wx/spc/day1/${slug(t.id)}`;
-    const disc = { name, unique_id: `wx_alerts_${id}`, object_id: id, state_topic: stateTopic, value_template: '{{ value_json.level }}', json_attributes_topic: stateTopic, icon: 'mdi:weather-lightning',
-      device: { identifiers: ['wx_alerts'], name: 'WX Alerts', manufacturer: 'geeojr/ha-addons', model: 'wx-alerts add-on', sw_version: VERSION } };
+    // default_entity_id (HA 2025.10+) fixes the entity id; the older object_id key is ignored by current HA.
+    // HA prefixes the device name to the entity name, so device "SPC day 1 outlook" + entity "Home" reads well.
+    const disc = { name: t.name, unique_id: `wx_alerts_${id}`, default_entity_id: `sensor.${id}`, state_topic: stateTopic, value_template: '{{ value_json.level }}', json_attributes_topic: stateTopic, icon: 'mdi:weather-lightning',
+      device: { identifiers: ['wx_alerts'], name: 'SPC day 1 outlook', manufacturer: 'geeojr/ha-addons', model: 'WX Alerts add-on', sw_version: VERSION } };
     await haService('mqtt', 'publish', { topic: `homeassistant/sensor/wx_alerts/${id}/config`, payload: JSON.stringify(disc), retain: true });
     await haService('mqtt', 'publish', { topic: stateTopic, payload: JSON.stringify(attrs), retain: true }); // level null renders "None" -> unknown
   } else {
