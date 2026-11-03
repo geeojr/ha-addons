@@ -43,8 +43,13 @@ const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : d; };
 const ONCE = args.includes('--once'), DRY = args.includes('--dry-run'), COST_ONLY = args.includes('--cost-only');
 const SID = OPT.statistic_id || '', COST_SID = OPT.cost_statistic_id || SID.replace(/_consumption$/, '_cost');
-const todayLocal = () => new Date().toLocaleDateString('en-CA', { timeZone: TZNAME });
-const addDays = (ds, n) => { const d = new Date(ds + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+// Locale-independent wall-clock parts in TZNAME (Alpine's node only ships 'en' locale data, so
+// toLocaleDateString('en-CA') is not a reliable way to get YYYY-MM-DD there).
+const PARTS_FMT = new Intl.DateTimeFormat('en-US', { timeZone: TZNAME, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const localParts = (d = new Date()) => { const o = {}; for (const x of PARTS_FMT.formatToParts(d)) o[x.type] = x.value; return { y: +o.year, m: +o.month, d: +o.day, h: +o.hour % 24, mi: +o.minute, s: +o.second }; };
+const todayLocal = () => { const p = localParts(); return `${p.y}-${String(p.m).padStart(2, '0')}-${String(p.d).padStart(2, '0')}`; };
+const isDate = (ds) => /^\d{4}-\d{2}-\d{2}$/.test(ds) && !Number.isNaN(Date.parse(ds + 'T00:00:00Z'));
+const addDays = (ds, n) => { if (!isDate(ds)) throw new Error(`bad date ${JSON.stringify(ds)}`); const d = new Date(ds + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => { const line = `${new Date().toISOString()} ${a.join(' ')}`; console.log(line); try { fs.appendFileSync(LOG, line + '\n'); } catch { /* ignore */ } };
 const lastRun = () => loadJson(LAST_RUN, {});
@@ -216,10 +221,11 @@ async function priceReads(reads) {
 
 // ---------- one sync run ----------
 async function runSync() {
-  const { FROM, TO } = windowFor();
-  log(`=== sync ${FROM} .. ${TO}${DRY ? ' (dry run)' : ''}${COST_ONLY ? ' (cost only, from stored consumption)' : ''}`);
   const prev = lastRun();
+  let FROM, TO;
   try {
+    ({ FROM, TO } = windowFor());
+    log(`=== sync ${FROM} .. ${TO}${DRY ? ' (dry run)' : ''}${COST_ONLY ? ' (cost only, from stored consumption)' : ''}`);
     let reads, requests = 0, res = { imported: 0 };
     if (COST_ONLY) {
       reads = await loadStoredReads(FROM, TO);
@@ -248,14 +254,15 @@ async function runSync() {
 // ---------- scheduler ----------
 function msUntil(hhmm) {
   const [h, m] = hhmm.split(':').map(Number);
-  const now = new Date();
+  const now = Date.now();
   for (let d = 0; d < 3; d++) {
     const ds = addDays(todayLocal(), d);
-    // find the UTC instant of ds hh:mm in TZNAME by probing the offset
-    const guess = new Date(`${ds}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00Z`);
-    const local = new Date(guess.toLocaleString('en-US', { timeZone: TZNAME }));
-    const t = guess.getTime() + (guess.getTime() - local.getTime());
-    if (t > now.getTime() + 1000) return t - now.getTime();
+    // UTC instant of ds hh:mm in TZNAME: start from the UTC guess and correct by the zone offset at that moment
+    const guess = Date.parse(`${ds}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00Z`);
+    const p = localParts(new Date(guess));
+    const asLocal = Date.UTC(p.y, p.m - 1, p.d, p.h, p.mi, p.s);
+    const t = guess + (guess - asLocal);
+    if (t > now + 1000) return t - now;
   }
   return DAY;
 }
