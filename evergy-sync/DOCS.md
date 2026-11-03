@@ -17,7 +17,7 @@ change. Connectivity failures are simply reported and retried at the next schedu
 | `username` / `password` | Your evergy.com login |
 | `run_at` | Daily run time, America/Chicago (`06:10`). Opower data lags about a day |
 | `run_on_start` | Also run when the add-on starts, if today has not been synced yet |
-| `statistic_id` | Statistic to write (`opower:<utility>_elec_<account>_energy_consumption` keeps existing history). Cost goes to the same id with `_cost` |
+| `statistic_id` | **Required.** Statistic to write, e.g. `opower:kcpl_elec_<account number>_energy_consumption` (using the id the Opower integration created keeps your existing history). Cost goes to the same id with `_cost` |
 | `statistic_name` / `cost_statistic_name` | Display names |
 | `rate_entity` | Sensor whose `plans` attribute holds the TOU rate plans |
 | `account_uuid` | Opower utility account uuid; blank = auto-detect (logged on the first run) |

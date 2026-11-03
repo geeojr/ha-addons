@@ -53,7 +53,7 @@ const DEFAULT_RULES = (() => {
 const DEFAULT_CONFIG = {
   ha_url: 'http://172.16.10.7:8123', ha_token: '',
   port: 7110, poll_seconds: 120,
-  nws_user_agent: '(wx-alerts for Home Assistant, jeremy.geeo@gmail.com)',
+  nws_user_agent: '(wx-alerts Home Assistant add-on)', // the NWS asks for a contact: set the nws_contact add-on option
   home: { lat: null, lon: null },            // null = read zone.home from HA each poll
   people: [],                                // filled from HA person.* on first start; edit in the panel
   rules: DEFAULT_RULES,
@@ -72,6 +72,8 @@ if (!config) {
 }
 // As a Home Assistant add-on the Supervisor proxies the core API and hands us a token; no config needed.
 const SUPERVISOR = process.env.SUPERVISOR_TOKEN ? { ha_url: 'http://supervisor/core', ha_token: process.env.SUPERVISOR_TOKEN } : {};
+const ADDON_OPTIONS = loadJson('/data/options.json', {});
+if (ADDON_OPTIONS.nws_contact) SUPERVISOR.nws_user_agent = `(wx-alerts Home Assistant add-on, ${ADDON_OPTIONS.nws_contact})`;
 config = { ...DEFAULT_CONFIG, ...config, ...SUPERVISOR, mqtt: { ...DEFAULT_CONFIG.mqtt, ...(config.mqtt || {}) }, push: { ...DEFAULT_CONFIG.push, ...(config.push || {}) }, templates: { ...T.DEFAULT_TEMPLATES, ...(config.templates || {}) } };
 let state = loadJson(STATE_PATH, { seen: {}, primed: false, log: [], last: null });
 

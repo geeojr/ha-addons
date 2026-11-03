@@ -262,6 +262,7 @@ function msUntil(hhmm) {
 
 if (require.main === module) (async () => {
   if (!HA_TOKEN) { log('no HA token (SUPERVISOR_TOKEN / HA_TOKEN)'); process.exit(1); }
+  if (!SID) { log('statistic_id option is empty - set it (e.g. opower:kcpl_elec_<account>_energy_consumption) and restart'); await notify('Evergy sync not configured', 'Set the statistic_id option (and username/password) in the Evergy Sync add-on, then restart it.'); process.exit(1); }
   if (ONCE) process.exit((await runSync()) ? 0 : 1);
   log(`evergy-sync add-on: daily at ${OPT.run_at} ${TZNAME}; statistic ${SID}`);
   if (OPT.run_on_start !== false && lastRun().last_ok_to !== todayLocal()) { log('start-up run (today not synced yet)'); await runSync(); }

@@ -17,4 +17,6 @@ continuations and cancellations never fire again. The first run notes existing a
 Wording uses `{variables}`, `{var|fallback}` and `[ sections that vanish when empty ]`; per-level
 overrides live on each row. The *Test* tab can dry-run or really send a sample product.
 
-Everything is configured in the panel and stored in the add-on's `/data`. No options needed.
+Everything else is configured in the panel and stored in the add-on's `/data`.
+
+Option `nws_contact`: an e-mail address sent in the User-Agent to api.weather.gov, which the NWS asks for so they can reach you if the client misbehaves.

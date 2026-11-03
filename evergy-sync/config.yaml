@@ -14,7 +14,7 @@ options:
   password: ""
   run_at: "06:10"
   run_on_start: true
-  statistic_id: "opower:kcpl_elec_0698970553_energy_consumption"
+  statistic_id: ""
   statistic_name: "Evergy Grid"
   cost_statistic_name: "Evergy Grid cost"
   rate_entity: "sensor.electricity_rate"

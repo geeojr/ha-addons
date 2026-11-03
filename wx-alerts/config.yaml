@@ -15,6 +15,6 @@ panel_icon: mdi:weather-lightning
 panel_title: WX Alerts
 panel_admin: true
 options:
-  log_level: info
+  nws_contact: ""
 schema:
-  log_level: list(debug|info)
+  nws_contact: str?
