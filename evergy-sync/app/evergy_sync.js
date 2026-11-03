@@ -42,7 +42,7 @@ const TZNAME = 'America/Chicago';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : d; };
 const ONCE = args.includes('--once'), DRY = args.includes('--dry-run'), COST_ONLY = args.includes('--cost-only');
-const SID = OPT.statistic_id, COST_SID = OPT.cost_statistic_id || SID.replace(/_consumption$/, '_cost');
+const SID = OPT.statistic_id || '', COST_SID = OPT.cost_statistic_id || SID.replace(/_consumption$/, '_cost');
 const todayLocal = () => new Date().toLocaleDateString('en-CA', { timeZone: TZNAME });
 const addDays = (ds, n) => { const d = new Date(ds + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
