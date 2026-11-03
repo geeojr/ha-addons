@@ -1,5 +1,5 @@
 name: WX Alerts
-version: "1.0.1"
+version: "1.1.0"
 slug: wx_alerts
 description: NWS watch/warning watcher - per-level announce/push rules, templated voice text, pushes people who are inside an alert
 url: https://github.com/geeojr/ha-addons/tree/main/wx-alerts

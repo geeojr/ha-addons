@@ -137,10 +137,19 @@
         <label>Critical channel <input type="text" id="push-critical" style="width:140px"></label>
         <label>Tap opens <input type="text" id="push-url" style="width:260px"></label></div>
     </div>
+    <div class="card">
+      <h2>SPC day 1 outlook sensors</h2>
+      <p class="hint">The Storm Prediction Center's categorical outlook at home and at each person's position, as a number for automations: <b>0</b> none · <b>1</b> general thunderstorms · <b>2</b> marginal · <b>3</b> slight · <b>4</b> enhanced · <b>5</b> moderate · <b>6</b> high. One sensor per target (<code>sensor.&lt;prefix&gt;_home</code>, <code>sensor.&lt;prefix&gt;_&lt;person&gt;</code>) with the label, validity and forecaster as attributes; an event fires whenever a target's level changes. Created through MQTT discovery when MQTT is on, otherwise through the states API (then they disappear until the next poll after a Home Assistant restart).</p>
+      <div class="row"><label><input type="checkbox" id="spc-enabled"> publish outlook sensors</label>
+        <label>re-check SPC every <input type="number" id="spc-poll" min="5" step="5" style="width:70px"> min</label>
+        <label>entity prefix <input type="text" id="spc-prefix" style="width:150px"></label>
+        <label>change event <input type="text" id="spc-event" style="width:120px"></label></div>
+    </div>
   </section>
 
   <section id="tab-status" hidden>
-    <div class="card"><h2>Last poll</h2><div id="st-last"></div><table id="st-targets"></table></div>
+    <div class="card"><h2>Last poll</h2><div id="st-last"></div><table id="st-targets"><thead><tr><th>Target</th><th>Active alerts</th><th>SPC day 1</th></tr></thead><tbody></tbody></table></div>
+    <div class="card"><h2>SPC day 1 outlook</h2><div id="st-spc"></div><div class="row"><button class="btn sec" id="spc-refresh">Refresh outlook now</button></div></div>
     <div class="card"><h2>Recent notifications</h2><div class="log" id="st-log"></div></div>
   </section>
 
@@ -297,17 +306,26 @@
   function renderDelivery() {
     $('#mqtt-enabled').checked = !!cfg.mqtt.enabled; $('#mqtt-topic').value = cfg.mqtt.topic; $('#mqtt-legacy').checked = !!cfg.mqtt.legacy_voice; $('#mqtt-legacy-topic').value = cfg.mqtt.legacy_voice_topic;
     $('#ha-event').value = cfg.ha_event || ''; $('#poll').value = cfg.poll_seconds; $('#push-channel').value = cfg.push.channel; $('#push-critical').value = cfg.push.critical_channel; $('#push-url').value = cfg.push.url || '';
+    cfg.spc = cfg.spc || { enabled: true, poll_minutes: 10, entity_prefix: 'wx_spc_day1', ha_event: 'wx_spc' };
+    $('#spc-enabled').checked = !!cfg.spc.enabled; $('#spc-poll').value = cfg.spc.poll_minutes; $('#spc-prefix').value = cfg.spc.entity_prefix; $('#spc-event').value = cfg.spc.ha_event || '';
   }
   const bind = (id, fn) => $(id).addEventListener('change', () => { fn($(id)); setDirty(true); });
   bind('#mqtt-enabled', (e) => cfg.mqtt.enabled = e.checked); bind('#mqtt-topic', (e) => cfg.mqtt.topic = e.value.trim()); bind('#mqtt-legacy', (e) => cfg.mqtt.legacy_voice = e.checked); bind('#mqtt-legacy-topic', (e) => cfg.mqtt.legacy_voice_topic = e.value.trim());
   bind('#ha-event', (e) => cfg.ha_event = e.value.trim()); bind('#poll', (e) => cfg.poll_seconds = +e.value); bind('#push-channel', (e) => cfg.push.channel = e.value.trim()); bind('#push-critical', (e) => cfg.push.critical_channel = e.value.trim()); bind('#push-url', (e) => cfg.push.url = e.value.trim());
+  bind('#spc-enabled', (e) => cfg.spc.enabled = e.checked); bind('#spc-poll', (e) => cfg.spc.poll_minutes = Math.max(5, +e.value || 10)); bind('#spc-prefix', (e) => cfg.spc.entity_prefix = e.value.trim()); bind('#spc-event', (e) => cfg.spc.ha_event = e.value.trim());
 
   // ---- status ----
   async function loadStatus() {
     const s = await api('/api/status');
     const L = s.last || {};
     $('#st-last').innerHTML = L.error ? `<span style="color:var(--warn)">${esc(L.error)}</span> at ${esc(L.at)}` : `${esc(L.at || 'never')} · ${L.requests ?? 0} NWS request(s) · ${L.ms ?? '?'} ms · ${s.primed ? 'armed' : 'priming'} · v${esc(s.version)} up ${Math.round((s.uptime_s || 0) / 60)} min`;
-    $('#st-targets').innerHTML = (L.targets || []).map((t) => `<tr><td><b>${esc(t.name)}</b><br><span class="meta" style="color:var(--muted);font-size:12.5px">${t.skipped ? 'skipped: ' + esc(t.skipped) : t.error ? 'error: ' + esc(t.error) : (t.zone && t.zone !== 'home' ? esc(t.zone) + ' · ' : '') + (t.lat != null ? `${t.lat}, ${t.lon}` : '')}</span></td><td>${(t.active || []).length ? t.active.map((a) => `<span class="pill ${a.wants ? 'on' : ''}">${esc(a.level)}</span> <span style="color:var(--muted);font-size:12.5px">${esc(a.messageType)} · until ${esc(new Date(a.ends).toLocaleString())}</span><br>`).join('') : '<span style="color:var(--muted)">no active alerts</span>'}</td></tr>`).join('');
+    const spc = s.spc || {}, lv = spc.levels || {};
+    const spcCell = (t) => { const x = lv[t.target]; if (!x) return '<span style="color:var(--muted)">—</span>'; return `<span class="pill ${x.level >= 3 ? 'crit' : x.level > 0 ? 'on' : ''}" title="${esc(x.entity)}">${x.level == null ? '?' : x.level} · ${esc(x.label)}</span><br><span style="color:var(--muted);font-size:12.5px">${esc(x.entity)}</span>`; };
+    $('#st-targets tbody').innerHTML = (L.targets || []).map((t) => `<tr><td><b>${esc(t.name)}</b><br><span class="meta" style="color:var(--muted);font-size:12.5px">${t.skipped ? 'skipped: ' + esc(t.skipped) : t.error ? 'error: ' + esc(t.error) : (t.zone && t.zone !== 'home' ? esc(t.zone) + ' · ' : '') + (t.lat != null ? `${t.lat}, ${t.lon}` : '')}</span></td><td>${(t.active || []).length ? t.active.map((a) => `<span class="pill ${a.wants ? 'on' : ''}">${esc(a.level)}</span> <span style="color:var(--muted);font-size:12.5px">${esc(a.messageType)} · until ${esc(new Date(a.ends).toLocaleString())}</span><br>`).join('') : '<span style="color:var(--muted)">no active alerts</span>'}</td><td>${spcCell(t)}</td></tr>`).join('');
+    const o = spc.outlook;
+    $('#st-spc').innerHTML = !cfg.spc?.enabled ? '<span style="color:var(--muted)">outlook sensors are off (People tab)</span>'
+      : (spc.error ? `<div style="color:var(--warn)">${esc(spc.error)}</div>` : '') + (o ? `Issued ${esc(new Date(o.issued).toLocaleString())} by ${esc(o.forecaster || '?')} · valid ${esc(new Date(o.valid).toLocaleString())} → ${esc(new Date(o.expire).toLocaleString())}${o.expired ? ' <span class="pill crit">expired</span>' : ''} · risk areas: ${o.areas.length ? o.areas.map((a) => `<span class="pill">${esc(a)}</span>`).join(' ') : 'none'} · fetched ${esc(new Date(o.fetched_at).toLocaleString())}` : '<span style="color:var(--muted)">no outlook fetched yet</span>')
+      + '<table style="margin-top:8px"><thead><tr><th>Target</th><th>Level</th><th>Sensor</th><th>Checked at</th></tr></thead><tbody>' + Object.values(lv).map((x) => `<tr><td><b>${esc(x.name)}</b></td><td><span class="pill ${x.level >= 3 ? 'crit' : x.level > 0 ? 'on' : ''}">${x.level == null ? '?' : x.level}</span> ${esc(x.label)}</td><td><code>${esc(x.entity)}</code></td><td style="color:var(--muted);font-size:12.5px">${x.lat != null ? `${x.lat}, ${x.lon} · ` : ''}${esc(new Date(x.published_at).toLocaleString())}</td></tr>`).join('') + '</tbody></table>';
     $('#st-log').innerHTML = s.log.length ? s.log.map((e) => e.error ? `<div><span class="meta">${esc(e.at)}</span> <span style="color:var(--warn)">${esc(e.target)}: ${esc(e.error)}</span></div>` : `<div><span class="meta">${esc(e.at)}</span> <b>${esc(e.name)}</b> — ${esc(e.level)} ${e.dry ? '<span class="pill">dry run</span>' : ''}<br><span class="meta">${esc(e.voice)}</span><br><span class="meta">sent: ${esc((e.did || []).join(', ') || 'nothing')}</span></div>`).join('') : '<span style="color:var(--muted)">nothing yet</span>';
   }
 
@@ -322,10 +340,11 @@
   $('#test-dry').addEventListener('click', () => runTest(true));
   $('#test-live').addEventListener('click', () => { if (confirm('Really announce / push this test?')) runTest(false); });
   $('#poll-now').addEventListener('click', async () => { $('#test-out').textContent = 'polling…'; const r = await api('/api/poll', {}); $('#test-out').textContent = JSON.stringify(r, null, 1); });
+  $('#spc-refresh').addEventListener('click', async () => { $('#spc-refresh').disabled = true; try { await api('/api/spc/refresh', {}); await loadStatus(); toast('Outlook refreshed'); } catch (e) { toast('refresh failed: ' + e.message); } $('#spc-refresh').disabled = false; });
 
   // ---- save ----
   $('#save').addEventListener('click', async () => {
-    try { await api('/api/config', { rules: cfg.rules, templates: cfg.templates, people: cfg.people, mqtt: cfg.mqtt, push: cfg.push, ha_event: cfg.ha_event, poll_seconds: cfg.poll_seconds }); setDirty(false); toast('Saved'); renderRules(); }
+    try { await api('/api/config', { rules: cfg.rules, templates: cfg.templates, people: cfg.people, mqtt: cfg.mqtt, push: cfg.push, spc: cfg.spc, ha_event: cfg.ha_event, poll_seconds: cfg.poll_seconds }); setDirty(false); toast('Saved'); renderRules(); }
     catch (e) { toast('Save failed: ' + e.message); }
   });
   window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });

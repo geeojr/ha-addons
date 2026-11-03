@@ -17,6 +17,11 @@ continuations and cancellations never fire again. The first run notes existing a
 Wording uses `{variables}`, `{var|fallback}` and `[ sections that vanish when empty ]`; per-level
 overrides live on each row. The *Test* tab can dry-run or really send a sample product.
 
+**SPC day 1 outlook sensors**: `sensor.wx_spc_day1_home` and `sensor.wx_spc_day1_<person>` carry the
+Storm Prediction Center's categorical risk at each position as a number (0 none, 1 general
+thunderstorms, 2 marginal, 3 slight, 4 enhanced, 5 moderate, 6 high) for automations; the event
+`wx_spc` fires when a target's level changes. Details in DOCS.md.
+
 Everything else is configured in the panel and stored in the add-on's `/data`.
 
 Option `nws_contact`: an e-mail address sent in the User-Agent to api.weather.gov, which the NWS asks for so they can reach you if the client misbehaves.
