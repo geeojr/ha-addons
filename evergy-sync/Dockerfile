@@ -3,4 +3,6 @@ FROM $BUILD_FROM
 RUN apk add --no-cache nodejs
 WORKDIR /app
 COPY app/ /app/
-CMD ["node", "/app/evergy_sync.js"]
+COPY run.sh /run.sh
+RUN chmod +x /run.sh
+CMD ["/run.sh"]

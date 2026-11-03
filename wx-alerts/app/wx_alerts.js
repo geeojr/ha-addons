@@ -27,7 +27,7 @@ const fs = require('fs'), path = require('path'), os = require('os'), http = req
 const T = require('./lib/template');
 const FIX = require('./test/fixtures');
 
-const DIR = process.env.WX_ALERTS_DIR || path.join(os.homedir(), '.config/wx-alerts');
+const DIR = process.env.WX_ALERTS_DIR || (fs.existsSync('/data/options.json') ? '/data' : path.join(os.homedir(), '.config/wx-alerts')); // add-on: /data
 const CONFIG_PATH = path.join(DIR, 'config.json');
 const STATE_PATH = path.join(DIR, 'state.json');
 const TYPES_PATH = path.join(DIR, 'event_types.json');
