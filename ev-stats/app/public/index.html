@@ -82,7 +82,7 @@
   <div class="card">
     <h2>Chargers</h2>
     <p class="hint">Name each home charger exactly as it appears in the vehicles' charger helper options (e.g. <code>North</code>, <code>South</code>) and give its power sensor (kW). Energy is integrated from that sensor's history.</p>
-    <table id="chargers"><thead><tr><th>Name</th><th>Power sensor</th><th></th></tr></thead><tbody></tbody></table>
+    <table id="chargers"><thead><tr><th>Name</th><th>Power sensor</th><th>Status sensor (plug detection)</th><th>Max kW</th><th></th></tr></thead><tbody></tbody></table>
     <div class="row"><button id="charger-add" class="btn sec sm">Add charger</button></div>
     <div id="ports" class="hint"></div>
   </div>
@@ -135,6 +135,18 @@
       <label class="f">Regen share (of driving energy recovered by regenerative braking) <input type="number" id="em-regen" min="0" max="0.5" step="0.01"></label>
     </div>
     <p class="hint">Defaults: 33.7 / 37.7 kWh per gallon (the EPA's lower heating values behind MPGe), 25 % / 30 % engine efficiency over a mixed drive cycle, 88 % EV drivetrain, 10 % regen. A vehicle can override the engine efficiency on the Vehicles tab.</p>
+  </div>
+  <div class="card">
+    <h2>Port detection</h2>
+    <p class="hint">A charger status sensor's plug-in (anything but <code>available</code>) is matched to the vehicle whose plug sensor turned on closest in time. With <i>switch the charger helpers</i> on, the vehicle's <code>input_select</code> and its charger history follow the detected port. When nobody claims a plug-in, the refresh button of every unplugged vehicle that has one is pressed once.</p>
+    <div class="grid">
+      <label class="f">Detect vehicles on ports <input type="checkbox" id="dt-enabled" style="display:inline-block;width:auto"></label>
+      <label class="f">Switch the charger helpers to the detected port <input type="checkbox" id="dt-auto" style="display:inline-block;width:auto"></label>
+      <label class="f">Vehicle may report up to (minutes) before the charger <input type="number" id="dt-before" min="0" max="60"></label>
+      <label class="f">… and up to (minutes) after <input type="number" id="dt-after" min="1" max="120"></label>
+      <label class="f">Ask for a refresh after (minutes) unclaimed <input type="number" id="dt-refresh" min="0" max="60"></label>
+      <label class="f">History looked at each run (hours) <input type="number" id="dt-lookback" min="1" max="48"></label>
+    </div>
   </div>
   <div class="card">
     <h2>Charging session check</h2>
@@ -193,11 +205,19 @@ async function loadStatus() {
   const defs = cfg ? cfg.metric_defs : {};
   const order = ['miles', 'home_energy', 'home_cost', 'avg_rate', 'away_energy', 'other_energy', 'other_cost', 'ev_cost', 'battery_energy', 'drive_energy', 'charged_energy', 'efficiency', 'consumption', 'wall_consumption', 'cost_per_mile', 'fuel_gallons', 'fuel_cost', 'savings', 'savings_pct', 'energy_mpg', 'energy_fuel_gallons', 'energy_fuel_cost', 'energy_savings'];
   let html = '';
+  const ports = last.ports || {};
+  if (Object.keys(ports).length) {
+    const when = (iso) => iso ? new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '?';
+    html += `<div class="card"><h2>Ports</h2><table><thead><tr><th>Port</th><th>Status</th><th>Vehicle</th><th>Since</th><th>Confidence</th></tr></thead><tbody>${Object.entries(ports).map(([n, p]) => `<tr><td><b>${esc(n)}</b></td><td>${esc(p.status || '–')}</td><td>${p.vehicle_name ? esc(p.vehicle_name) : p.plugged ? '<span class="pill crit">unknown – nobody claimed it</span>' : '<span class="pill">nothing plugged in</span>'}</td><td>${when(p.since)}</td><td>${esc(p.confidence || '–')}${p.plug_delay_s != null && p.vehicle ? ` (plug sensor +${p.plug_delay_s} s)` : ''}</td></tr>`).join('')}</tbody></table></div>`;
+  }
+  const dur = (min) => min == null ? '–' : min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')} min`;
+  const clock = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + (new Date(iso).toDateString() !== new Date().toDateString() ? ' ' + new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' }) : '') : '–';
   for (const [vid, v] of Object.entries(last.vehicles || {})) {
     const wins = Object.keys(v.metrics || {});
     const s = v.settings || {}, live = v.live || {};
     const asg = (status.assignments || {})[vid] || [];
     html += `<div class="card"><h2>${esc(v.name)} <span class="sub">charger <b>${esc(live.charger || 'none')}</b>${live.charging ? ' · charging ' + fmt(live.charger_power_kw, 1) + ' kW' : ''} · vs ${esc(s.grade)} at ${fmt(s.mpg, 1)} mpg assumed${live.energy_mpg != null ? ' / ' + fmt(live.energy_mpg, 1) + ' mpg from energy (' + fmt(live.drive_kwh_per_mile, 3) + ' kWh/mi)' : ''} (${live.fuel_price != null ? '$' + fmt(live.fuel_price, 3) + '/gal ' + esc(live.fuel_price_source || '') : 'no price'}) · ${fmt(s.capacity, 1)} kWh pack</span></h2>`;
+    if (live.soc != null) html += `<p class="hint" style="margin:0 0 8px">${live.plugged == null ? '' : live.plugged ? `plugged in${live.detected_port ? ' on ' + esc(live.detected_port) : ''}` : 'not plugged in'} · ${fmt(live.soc, 0)} % → ${fmt(live.target_soc, 0)} % target · ${live.charge_minutes != null ? `<b>${dur(live.charge_minutes)}</b> (${fmt(live.charge_needed_kwh, 1)} kWh at ${fmt(live.charge_kw, 1)} kW ${esc(live.charge_kw_source || '')})` : 'no charge estimate'}${live.charge_latest_start ? ` · cheapest window ${clock(live.cheap_window_start)}–${clock(live.cheap_window_end)} at $${fmt(live.cheap_rate, 2)} · latest start <b>${clock(live.charge_latest_start)}</b>${live.charge_start_early ? ' <span class="pill crit">must start before the window</span>' : ''}` : ''}</p>`;
     html += `<table><thead><tr><th>Metric</th>${wins.map((w) => `<th class="n">${esc(w)}</th>`).join('')}<th></th></tr></thead><tbody>`;
     for (const m of order) {
       if (!defs[m]) continue; const [unit, , label, prec] = defs[m];
@@ -235,10 +255,10 @@ $('#fuel-refresh').addEventListener('click', async () => { $('#fuel-refresh').di
 function dl(id, list) { return `<datalist id="${id}">${(list || []).map((e) => `<option value="${esc(e.entity)}">${esc(e.name)}</option>`).join('')}</datalist>`; }
 function renderVehicles() {
   const tb = $('#chargers tbody'); tb.innerHTML = '';
-  for (const [name, c] of Object.entries(cfg.chargers || {})) tb.insertAdjacentHTML('beforeend', `<tr><td><input type="text" class="m ch-name" value="${esc(name)}"></td><td><input type="text" class="w ch-power" list="dl-power" value="${esc(c.power)}"></td><td><button class="lnk del ch-del">remove</button></td></tr>`);
+  for (const [name, c] of Object.entries(cfg.chargers || {})) tb.insertAdjacentHTML('beforeend', `<tr><td><input type="text" class="m ch-name" value="${esc(name)}"></td><td><input type="text" class="w ch-power" list="dl-power" value="${esc(c.power)}"></td><td><input type="text" class="w ch-status" list="dl-status" value="${esc(c.status || '')}"></td><td><input type="number" class="s ch-kw" step="0.1" min="0" value="${c.max_kw || ''}"></td><td><button class="lnk del ch-del">remove</button></td></tr>`);
   tb.querySelectorAll('.ch-del').forEach((b) => b.addEventListener('click', () => { b.closest('tr').remove(); readChargers(); }));
   tb.querySelectorAll('input').forEach((i) => i.addEventListener('input', readChargers));
-  const ports = (status && status.ports) || {};
+  const ports = (status && status.port_timeline) || {};
   $('#ports').innerHTML = Object.keys(ports).length ? '<b>Port timeline</b> (from every vehicle\'s charger history; sessions that no assigned vehicle\'s battery took are listed per vehicle on the Status tab): ' + Object.entries(ports).map(([n, list]) => `<br><b>${esc(n)}</b>: ${list.map((a) => `${esc(a.vehicle)} ${a.from ? 'from ' + new Date(a.from).toLocaleDateString() : 'from the beginning'}${a.to ? ' to ' + new Date(a.to).toLocaleDateString() : ''}`).join(', ') || 'nobody'}`).join('') : '';
   const wrap = $('#vehicles'); wrap.innerHTML = '';
   const chargerNames = Object.keys(cfg.chargers || {});
@@ -259,6 +279,10 @@ function renderVehicles() {
         <label class="f">Fuel grade (if no helper) <select data-k="fuel_grade">${['regular', 'midgrade', 'premium', 'diesel'].map((g) => `<option ${v.fuel_grade === g ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
         ${f('Equivalent MPG (if no helper)', 'mpg', 'number', 'step="0.1" min="1"')}
         ${f('Engine efficiency for the energy comparison (blank = Settings default)', 'engine_efficiency', 'number', 'step="0.01" min="0" max="0.6"')}
+        ${f('Plug sensor (binary_sensor, for port detection)', 'plug_entity', 'text', 'list="dl-binary"')}
+        ${f('Refresh button (pressed when a port sees an unclaimed plug-in)', 'refresh_button', 'text', 'list="dl-buttons"')}
+        ${f('Charge target entity (%)', 'charge_limit_entity', 'text', 'list="dl-limits"')}
+        ${f('Charge target (%) if no entity', 'charge_limit', 'number', 'step="1" min="1" max="100"')}
       </div>
       <p class="hint" style="margin-top:10px">Charger history – which charger this vehicle used, by date. The live helper appends a new entry whenever it changes; edit the past here if a vehicle moved between chargers before this add-on existed.</p>
       <table class="asg"><thead><tr><th>From</th><th>Charger</th><th></th></tr></thead><tbody>${asg.map((a) => `<tr><td><input type="date" class="asg-from" value="${a.at ? new Date(a.at).toLocaleDateString('en-CA') : ''}" ${a.at ? '' : 'disabled placeholder="beginning"'}></td><td><select class="asg-ch">${['', ...chargerNames].map((n) => `<option value="${esc(n)}" ${n === (a.charger || '') ? 'selected' : ''}>${esc(n || 'none')}</option>`).join('')}</select></td><td><button class="lnk del asg-del">remove</button></td></tr>`).join('')}</tbody></table>
@@ -281,12 +305,12 @@ function renderVehicles() {
 function bindAsgDel(card) { card.querySelectorAll('.asg-del').forEach((b) => { b.onclick = () => b.closest('tr').remove(); }); }
 function readChargers() {
   const out = {};
-  $('#chargers tbody').querySelectorAll('tr').forEach((tr) => { const n = $('.ch-name', tr).value.trim(), p = $('.ch-power', tr).value.trim(); if (n) out[n] = { power: p }; });
+  $('#chargers tbody').querySelectorAll('tr').forEach((tr) => { const n = $('.ch-name', tr).value.trim(), p = $('.ch-power', tr).value.trim(); if (n) out[n] = { power: p, status: $('.ch-status', tr).value.trim(), max_kw: Number($('.ch-kw', tr).value) || 0 }; });
   cfg.chargers = out; setDirty(true);
 }
-$('#charger-add').addEventListener('click', () => { $('#chargers tbody').insertAdjacentHTML('beforeend', `<tr><td><input type="text" class="m ch-name" placeholder="North"></td><td><input type="text" class="w ch-power" list="dl-power" placeholder="sensor.charger_power"></td><td><button class="lnk del ch-del">remove</button></td></tr>`); renderVehiclesBindOnly(); });
+$('#charger-add').addEventListener('click', () => { $('#chargers tbody').insertAdjacentHTML('beforeend', `<tr><td><input type="text" class="m ch-name" placeholder="North"></td><td><input type="text" class="w ch-power" list="dl-power" placeholder="sensor.charger_power"></td><td><input type="text" class="w ch-status" list="dl-status" placeholder="sensor.charger_status"></td><td><input type="number" class="s ch-kw" step="0.1" min="0" placeholder="5.76"></td><td><button class="lnk del ch-del">remove</button></td></tr>`); renderVehiclesBindOnly(); });
 function renderVehiclesBindOnly() { const tb = $('#chargers tbody'); tb.querySelectorAll('.ch-del').forEach((b) => { b.onclick = () => { b.closest('tr').remove(); readChargers(); }; }); tb.querySelectorAll('input').forEach((i) => { i.oninput = readChargers; }); }
-$('#vehicle-add').addEventListener('click', () => { cfg.vehicles.push({ id: '', name: '', enabled: true, charger_select: '', odometer: '', soc: '', capacity_kwh: 0, capacity_entity: '', charge_efficiency: 0.9, fuel_select: '', mpg_entity: '', fuel_grade: 'regular', mpg: 20, engine_efficiency: 0 }); setDirty(true); renderVehicles(); });
+$('#vehicle-add').addEventListener('click', () => { cfg.vehicles.push({ id: '', name: '', enabled: true, charger_select: '', odometer: '', soc: '', capacity_kwh: 0, capacity_entity: '', charge_efficiency: 0.9, fuel_select: '', mpg_entity: '', fuel_grade: 'regular', mpg: 20, engine_efficiency: 0, plug_entity: '', refresh_button: '', charge_limit_entity: '', charge_limit: 80 }); setDirty(true); renderVehicles(); });
 $('#helpers').addEventListener('click', async () => { if (dirty) { toast('save the configuration first'); return; } try { const r = await post('helpers'); cfg.vehicles = r.vehicles; renderVehicles(); toast(r.created.length ? 'created: ' + r.created.join(', ') : 'nothing to create'); } catch (e) { toast(e.message); } });
 
 // ---------- fuel / settings ----------
@@ -296,6 +320,8 @@ function renderSettings() {
   $('#fuel-eia').innerHTML = Object.entries(EIA_AREAS).map(([k, n]) => `<option value="${k}" ${f.eia_area === k ? 'selected' : ''}>${esc(n)} (${k})</option>`).join('');
   $('#fuel-state').value = f.aaa_state || ''; $('#fuel-area').value = f.aaa_area || ''; $('#fuel-poll').value = f.poll_hours; $('#fuel-from').value = f.history_from || ''; $('#fuel-prefix').value = f.entity_prefix;
   $('#poll-minutes').value = cfg.poll_minutes; $('#recent-hours').value = cfg.recent_hours; $('#raw-days').value = cfg.raw_days; $('#backfill-from').value = cfg.backfill_from || ''; $('#rate-entity').value = cfg.rate_entity; $('#away-rate').value = cfg.away_rate;
+  const dt = cfg.detection || {};
+  $('#dt-enabled').checked = dt.enabled !== false; $('#dt-auto').checked = dt.auto_assign !== false; $('#dt-before').value = dt.before_minutes; $('#dt-after').value = dt.after_minutes; $('#dt-refresh').value = dt.refresh_after_minutes; $('#dt-lookback').value = dt.lookback_hours;
   const sc = cfg.session_check || {};
   $('#sc-enabled').checked = sc.enabled !== false; $('#sc-min').value = sc.min_kwh; $('#sc-peak').value = sc.min_peak_kwh; $('#sc-frac').value = sc.match_fraction; $('#sc-lag').value = sc.lag_hours;
   const em = cfg.energy_model || {};
@@ -307,6 +333,7 @@ function renderSettings() {
 function readSettings() {
   cfg.fuel = { ...cfg.fuel, enabled: $('#fuel-enabled').checked, eia_area: $('#fuel-eia').value, eia_area_name: EIA_AREAS[$('#fuel-eia').value] || $('#fuel-eia').value, aaa_state: $('#fuel-state').value.trim().toUpperCase(), aaa_area: $('#fuel-area').value.trim(), poll_hours: Number($('#fuel-poll').value), history_from: $('#fuel-from').value, entity_prefix: $('#fuel-prefix').value.trim() };
   cfg.poll_minutes = Number($('#poll-minutes').value); cfg.recent_hours = Number($('#recent-hours').value); cfg.raw_days = Number($('#raw-days').value); cfg.backfill_from = $('#backfill-from').value; cfg.rate_entity = $('#rate-entity').value.trim(); cfg.away_rate = Number($('#away-rate').value);
+  cfg.detection = { enabled: $('#dt-enabled').checked, auto_assign: $('#dt-auto').checked, before_minutes: Number($('#dt-before').value), after_minutes: Number($('#dt-after').value), refresh_after_minutes: Number($('#dt-refresh').value), lookback_hours: Number($('#dt-lookback').value) };
   cfg.session_check = { enabled: $('#sc-enabled').checked, min_kwh: Number($('#sc-min').value), min_peak_kwh: Number($('#sc-peak').value), match_fraction: Number($('#sc-frac').value), lag_hours: Number($('#sc-lag').value) };
   cfg.energy_model = { gasoline_kwh_per_gal: Number($('#em-gas-kwh').value), diesel_kwh_per_gal: Number($('#em-diesel-kwh').value), engine_efficiency_gasoline: Number($('#em-gas-eff').value), engine_efficiency_diesel: Number($('#em-diesel-eff').value), ev_drivetrain_efficiency: Number($('#em-ev-eff').value), regen_share: Number($('#em-regen').value) };
   cfg.entity_prefix = $('#entity-prefix').value.trim(); cfg.windows = $('#windows').value.split(/[\s,]+/).filter(Boolean); cfg.mqtt = { ...cfg.mqtt, enabled: $('#mqtt-enabled').checked }; cfg.statistics = { ...cfg.statistics, enabled: $('#stats-enabled').checked, prefix: $('#stats-prefix').value.trim() };
@@ -322,7 +349,7 @@ $('#save').addEventListener('click', async () => {
 (async () => {
   cfg = await api('config');
   try { ha = await api('ha'); } catch (e) { ha = {}; toast('HA entity list: ' + e.message); }
-  document.body.insertAdjacentHTML('beforeend', dl('dl-selects', ha.selects) + dl('dl-numbers', ha.numbers) + dl('dl-distance', ha.distance) + dl('dl-battery', ha.battery) + dl('dl-power', ha.power) + dl('dl-storage', ha.energy_storage));
+  document.body.insertAdjacentHTML('beforeend', dl('dl-selects', ha.selects) + dl('dl-numbers', ha.numbers) + dl('dl-distance', ha.distance) + dl('dl-battery', ha.battery) + dl('dl-power', ha.power) + dl('dl-storage', ha.energy_storage) + dl('dl-status', ha.status) + dl('dl-binary', ha.binary) + dl('dl-buttons', ha.buttons) + dl('dl-limits', ha.limits));
   await loadStatus();
   renderVehicles(); renderSettings();
   setInterval(() => { if (!$('#tab-status').hidden) loadStatus(); }, 60000);

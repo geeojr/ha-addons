@@ -1,6 +1,6 @@
 {
   "name": "ev-stats",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Per-vehicle EV charging cost, efficiency and fuel-equivalent sensors for Home Assistant, plus EIA/AAA fuel prices",
   "main": "ev_stats.js",
   "private": true,

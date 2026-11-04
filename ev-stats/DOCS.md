@@ -88,7 +88,7 @@ one device per vehicle. Every sensor of a window carries **all** of that window'
 `raw_hours`, `energy_basis`, `energy_kwh_per_mile` and the energy parameters as attributes, so a
 card can show the breakdown from any one of them. Two live sensors per vehicle:
 `sensor.<prefix>_<vehicle>_charger` (assigned charger; attributes `charging`, `charger_power_kw`,
-`energy_mpg`, `drive_kwh_per_mile`) and `sensor.<prefix>_<vehicle>_fuel_price` (today's price of
+`energy_mpg`, `drive_kwh_per_mile`, `plugged`, `detected_port`, the charge estimate) and `sensor.<prefix>_<vehicle>_fuel_price` (today's price of
 its grade).
 
 ### Helpers
@@ -97,6 +97,35 @@ Each vehicle names its charger with an `input_select` helper you create (options
 names configured on the Vehicles tab). Switching it appends an entry to the vehicle's **charger
 history**; edit that history on the Vehicles tab when a vehicle used another charger in the
 past, then "Apply & rebuild".
+
+### Port detection
+
+Give each charger its **status sensor** (any state other than `available` / `unavailable` /
+`unknown` counts as plugged in) and each vehicle its **plug sensor** (`binary_sensor`). Every run
+looks at the last *lookback hours* of both: a charger's plug-in is matched to the vehicle whose plug
+sensor turned on closest in time, within *before* / *after* minutes, each vehicle event used once.
+The result is kept per port (`sensor.<prefix>_charger_<port>_vehicle`: the vehicle's name, `unknown`
+while something unclaimed is plugged in, `none` when the port is free; attributes `status`, `since`,
+`confidence` — `medium` when another vehicle also plugged in within the window) and, with *switch the
+charger helpers* on, the vehicle's `input_select` is set to that port and its charger history gets an
+entry at the plug-in time, so the hourly rows follow the port from then on. A plug-in nobody claimed
+after *refresh after minutes* presses the **refresh button** of every unplugged vehicle that has one
+(the Audi needs that nudge); the vehicle's plug sensor then usually turns on within the *after*
+window. Detection never un-assigns a vehicle: unplugging leaves the helper where it was.
+
+### Charge estimate
+
+Per vehicle: `sensor.<prefix>_<vehicle>_charge_time_to_target` (minutes to the charge target),
+`_charge_needed` (wall kWh), `_charge_latest_start` (timestamp: the latest start that finishes by the
+end of the next cheapest rate window), `binary_sensor.<prefix>_<vehicle>_charge_start_early` (on when
+the cheapest window alone is too short, i.e. start before it) and `binary_sensor.<prefix>_<vehicle>_plugged`.
+The target is the vehicle's **charge target entity** (a `number` or `sensor` in %) or a fixed value;
+the power is the port's live kW while charging, otherwise the mean of the vehicle's full charging hours
+over the last 30 days (≥ 90 % of its best hour), otherwise the charger's *max kW*. Attributes on the
+live sensors: `soc`, `target_soc`, `charge_kw`, `charge_kw_source`, `charge_finish`,
+`cheap_window_start`, `cheap_window_end`, `cheap_window_hours`, `cheap_rate`, `charge_start_in_minutes`.
+The cheapest window is the next run of hours at the lowest rate of the next 48 hours of the TOU plan
+(Super Off-Peak 00:00–06:00 on Evergy's plan).
 
 The add-on creates two helpers per vehicle if they are missing: `input_select.<name>_fuel_equivalent`
 (Regular / Midgrade / Premium / Diesel) and `input_number.<name>_equivalent_mpg`. Change them from

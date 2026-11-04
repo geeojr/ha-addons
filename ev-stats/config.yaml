@@ -1,5 +1,5 @@
 name: EV Stats
-version: "1.1.0"
+version: "1.2.0"
 slug: ev_stats
 description: Per-vehicle EV charging cost, efficiency and gasoline-equivalent sensors (rolling windows + long-term statistics), with EIA/AAA fuel prices
 url: https://github.com/geeojr/ha-addons/tree/main/ev-stats
