@@ -105,3 +105,59 @@ test('windowMetrics(): no miles -> ratio metrics are null, not NaN', () => {
   const m = R.windowMetrics({}, 0, 10, { mpg: 20, grade: 'regular', priceAt: () => null, efficiency: 0.9, awayRate: 0 });
   assert.equal(m.efficiency, null); assert.equal(m.cost_per_mile, null); assert.equal(m.savings, 0); assert.equal(m.miles, 0);
 });
+
+test('settleAway(): a state-of-charge rise reported in the hour after the wall delivered it is not away charging; a real DC charge still is', () => {
+  const h0 = R.hourOf(T0);
+  const rows = {
+    [h0]: { src: 'stat', home: 10, chg: 4.5 },             // charging 03:00-04:00, the mean lags: only half the rise shows
+    [h0 + 1]: { src: 'stat', home: 10, chg: 9 },
+    [h0 + 2]: { src: 'stat', chg: 4.5 },                   // the rest of the rise lands here
+    [h0 + 3]: { src: 'stat', mi: 20 },
+    [h0 + 4]: { src: 'stat', mi: 10, chg: 22, home: 0 },   // 22 kWh with nothing from the wall: DC fast charge
+    [h0 + 5]: { src: 'stat', chg: 3, nohome: true },       // no charger data: never away
+  };
+  assert.equal(R.settleAway(rows, 0.9), h0 + 4);
+  assert.deepEqual([rows[h0].away, rows[h0 + 1].away, rows[h0 + 2].away, rows[h0 + 4].away, rows[h0 + 5].away], [undefined, undefined, undefined, 22, undefined]);
+  // a sleeping car may report hours late: credit lives lagHours, then expires
+  const r2 = { [h0]: { src: 'raw', home: 10 }, [h0 + 1]: { src: 'raw' }, [h0 + 2]: { src: 'raw', chg: 5 }, [h0 + 3]: { src: 'raw', chg: 4 }, [h0 + 4]: { src: 'raw', chg: 1 } };
+  R.settleAway(r2, 0.9, 3); assert.deepEqual([r2[h0 + 2].away, r2[h0 + 3].away, r2[h0 + 4].away], [undefined, undefined, 1]); // 9 kWh credit covers 5 + 4; expired by h0+4
+  assert.equal(R.settleAway(r2, 0.9, 3), null); // idempotent
+});
+
+test('sessions() / validateSessions(): a session the battery did not take is booked as another vehicle\'s', () => {
+  const h0 = R.hourOf(T0);
+  const rows = {};
+  for (let i = 0; i < 6; i++) rows[h0 + i] = { src: 'raw', home: 6, cost: 0.12, chg: i < 5 ? 5.4 : 0 };   // 36 kWh, 27 gained + ...
+  rows[h0 + 6] = { src: 'raw', chg: 5.4 };                                                               // ... 5.4 reported after the end
+  for (let i = 8; i < 12; i++) rows[h0 + i] = { src: 'raw', home: 6, cost: 0.1 };                        // 24 kWh, nothing gained: not this car
+  rows[h0 + 14] = { src: 'raw', home: 1.5, cost: 0.03 };                                                 // trickle (peak < 4): left alone
+  rows[h0 + 16] = { src: 'raw', home: 8, cost: 0.2, nosoc: true };                                       // no battery data: trusted
+  const ss = R.sessions(rows);
+  assert.deepEqual(ss.map((s) => [s.start - h0, s.hours, s.wall, s.gained]), [[0, 6, 36, 32.4], [8, 4, 24, 0], [14, 1, 1.5, 0], [16, 1, 8, 0]]);
+  assert.equal(R.validateSessions(rows, 0.9), h0 + 8);
+  assert.deepEqual(rows[h0 + 8], { src: 'raw', other: 6, ocost: 0.1 });
+  assert.deepEqual(rows[h0], { src: 'raw', home: 6, cost: 0.12, chg: 5.4 });
+  assert.equal(rows[h0 + 14].home, 1.5); assert.equal(rows[h0 + 16].home, 8);
+  assert.equal(R.validateSessions(rows, 0.9), null); // idempotent, and reversible when the rule changes
+  assert.equal(R.validateSessions(rows, 0.9, { minKwh: 100 }), h0 + 8); assert.equal(rows[h0 + 8].home, 6);
+  const m = R.windowMetrics({ [h0]: { src: 'raw', mi: 10, home: 5, cost: 0.1, other: 20, ocost: 0.4 } }, h0, h0, { mpg: 20, grade: 'regular', priceAt: () => 4, efficiency: 0.9, awayRate: 0 });
+  assert.deepEqual([m.home_energy, m.home_cost, m.other_energy, m.other_cost], [5, 0.1, 20, 0.4]);
+});
+
+test('energy-based fuel equivalent: measured kWh/mi -> gallons, raw rate preferred, vehicle fallback when the window has no battery data', () => {
+  const h0 = R.hourOf(T0);
+  const energy = { kwhPerGal: 33.7, engineEff: 0.25, evEff: 0.88, regen: 0.1, fallbackKwhPerMile: 0.4 };
+  // 0.5 kWh/mi x 0.88 / 0.9 / (33.7 x 0.25) = 0.05803 gal/mi -> 17.2 mpg
+  assert.ok(Math.abs(R.gallonsPerMile(0.5, energy) - 0.058031) < 1e-5);
+  const rows = {};
+  for (let i = 0; i < 10; i++) rows[h0 + i] = { src: 'raw', mi: 10, drive: 5, pack: 5 };          // 100 raw mi at 0.5 kWh/mi
+  for (let i = 10; i < 20; i++) rows[h0 + i] = { src: 'stat', mi: 10, drive: 3, pack: 3 };        // 100 backfilled mi, under-counted energy
+  const m = R.windowMetrics(rows, h0, h0 + 19, { mpg: 20, grade: 'regular', priceAt: () => 4, efficiency: 0.9, awayRate: 0, energy });
+  assert.equal(m.energy_basis, 'raw'); assert.equal(m.energy_kwh_per_mile, 0.5);
+  assert.equal(m.energy_fuel_gallons, 11.61); assert.equal(m.energy_fuel_cost, 46.42); assert.equal(m.energy_mpg, 17.2);
+  assert.equal(m.energy_savings, 46.42); assert.equal(m.fuel_gallons, 10); // the assumed-MPG comparison is untouched
+  const none = R.windowMetrics({ [h0]: { src: 'stat', mi: 60, nosoc: true } }, h0, h0, { mpg: 20, grade: 'regular', priceAt: () => 4, efficiency: 0.9, awayRate: 0, energy });
+  assert.equal(none.energy_basis, 'vehicle'); assert.equal(none.energy_kwh_per_mile, 0.4);
+  assert.equal(R.driveRate(rows), 0.5);
+  assert.equal(R.windowMetrics({}, h0, h0, { mpg: 20, grade: 'regular', priceAt: () => 4, efficiency: 0.9, awayRate: 0 }).energy_basis, null);
+});

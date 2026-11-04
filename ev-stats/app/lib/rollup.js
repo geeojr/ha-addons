@@ -11,6 +11,8 @@
  *   home  kWh delivered by the assigned home charger (wall side)
  *   cost  USD for `home` at the time-of-use rate of that hour
  *   away  kWh (battery side) charged somewhere else: chg - home x charge efficiency, floored at 0
+ *   other kWh the assigned charger delivered in a session this vehicle's battery did not take
+ *         (another car on the port; validateSessions) and its cost `ocost` - not this vehicle's
  *   src   'raw' (from recorder states) or 'stat' (from hourly statistics; coarser)
  */
 const HOUR = 3600000;
@@ -127,33 +129,139 @@ function finish(r, rate, eff) {
   return r;
 }
 
-const EMPTY = { mi: 0, pack: 0, drive: 0, chg: 0, home: 0, cost: 0, away: 0 };
+const EMPTY = { mi: 0, pack: 0, drive: 0, chg: 0, home: 0, cost: 0, away: 0, other: 0, ocost: 0 };
+
+/**
+ * Charging sessions of the assigned charger: runs of consecutive hours with >= 0.2 kWh from the wall.
+ * Each: { start, end (hour idx), hours, wall, cost, gained (battery kWh in during the session and up
+ * to lagHours after it, before the next session: a sleeping car reports its state of charge late),
+ * peak (largest hour), nosoc, other (kWh currently booked as not this vehicle's) }.
+ */
+function sessions(rows, lagHours = 12) {
+  const hours = Object.keys(rows).map(Number).sort((a, b) => a - b);
+  const out = []; let cur = null;
+  const wallOf = (r) => (r.home || 0) + (r.other || 0);
+  for (const h of hours) {
+    const r = rows[h], wall = wallOf(r);
+    if (wall >= 0.2 && cur && h === cur.end + 1) {
+      cur.end = h; cur.hours++; cur.wall += wall; cur.cost += (r.cost || 0) + (r.ocost || 0); cur.other += r.other || 0; cur.peak = Math.max(cur.peak, wall);
+      cur.gained += r.chg || 0; if (!r.nosoc) cur.nosoc = false;
+    } else if (wall >= 0.2) {
+      if (cur) out.push(cur);
+      cur = { start: h, end: h, hours: 1, wall, cost: (r.cost || 0) + (r.ocost || 0), other: r.other || 0, peak: wall, gained: r.chg || 0, nosoc: !!r.nosoc };
+    }
+  }
+  if (cur) out.push(cur);
+  out.forEach((s, i) => { const stop = i + 1 < out.length ? out[i + 1].start - 1 : s.end + lagHours; for (let h = s.end + 1; h <= Math.min(stop, s.end + lagHours); h++) { const n = rows[h]; if (n) s.gained += n.chg || 0; } });
+  for (const s of out) for (const k of ['wall', 'cost', 'gained', 'other', 'peak']) s[k] = r3(s[k]);
+  return out;
+}
+
+/**
+ * Book sessions whose battery gain does not match the wall energy as another vehicle's: their kWh and
+ * cost move from home/cost to other/ocost. Re-runs from scratch every time (idempotent): a session is
+ * "not this vehicle" when wall >= minKwh, its largest hour >= minPeakKwh (a thermal trickle is not a
+ * session), battery data exists and gained < matchFraction x wall x efficiency. Returns the lowest
+ * changed hour or null.
+ *   o: { minKwh = 3, minPeakKwh = 4, matchFraction = 0.5, lagHours = 12 }
+ */
+function validateSessions(rows, eff, o = {}) {
+  const minKwh = o.minKwh ?? 3, minPeak = o.minPeakKwh ?? 4, frac = o.matchFraction ?? 0.5;
+  const before = {}; for (const [h, r] of Object.entries(rows)) if (r.other) before[h] = r.other;
+  for (const r of Object.values(rows)) { if (r.other) { r.home = r3((r.home || 0) + r.other); delete r.other; } if (r.ocost) { r.cost = r3((r.cost || 0) + r.ocost); delete r.ocost; } }
+  for (const s of sessions(rows, o.lagHours ?? 12)) {
+    if (s.nosoc || s.wall < minKwh || s.peak < minPeak || !(s.gained < frac * s.wall * (eff || 0.9))) continue;
+    for (let h = s.start; h <= s.end; h++) { const r = rows[h]; if (r.home) { r.other = r.home; delete r.home; } if (r.cost) { r.ocost = r.cost; delete r.cost; } }
+  }
+  let low = null;
+  for (const [h, r] of Object.entries(rows)) if ((r.other || 0) !== (before[h] || 0) && (low == null || +h < low)) low = +h;
+  return low;
+}
+
+/**
+ * Re-estimate `away` over a whole (possibly compact) row map with a one-hour memory: the car reports
+ * its state of charge late (and an hourly mean lags by up to an hour), so the battery-side rise of a
+ * charge lands partly in the hour AFTER the wall delivered it. Unused home credit (home x efficiency
+ * not yet matched by a state-of-charge rise) of an hour may still be claimed by the next hour; only
+ * what exceeds that is charging that happened elsewhere. Returns the lowest changed hour or null.
+ */
+function settleAway(rows, eff, lagHours = 12) {
+  const hours = Object.keys(rows).map(Number).sort((a, b) => a - b);
+  let credits = [], prev = null, low = null; // unmatched wall credit per hour, oldest first; a sleeping car can report hours late
+  for (const h of hours) {
+    const r = rows[h];
+    if (h !== prev + 1 || r.nohome) credits = [];
+    else credits = credits.filter((c) => h - c.h <= lagHours);
+    prev = h;
+    let away = 0;
+    if (!r.nohome) {
+      credits.push({ h, kwh: ((r.home || 0) + (r.other || 0)) * (eff || 0.9) }); // a session booked to another vehicle still explains a small gain
+      let need = r.chg || 0;
+      for (const c of credits) { const use = Math.min(c.kwh, need); c.kwh -= use; need -= use; if (!need) break; }
+      credits = credits.filter((c) => c.kwh > 1e-9);
+      away = r3(need);
+    }
+    if ((r.away || 0) !== away) { if (away) r.away = away; else delete r.away; if (low == null) low = h; }
+  }
+  return low;
+}
+
+/**
+ * Gasoline-equivalent gallons per mile from measured driving energy (battery side, net of regen):
+ *   wheel energy = kWh/mi x EV drivetrain efficiency / (1 - regen share)
+ *   gallons/mi   = wheel energy / (kWh per gallon x engine+transmission efficiency)
+ */
+function gallonsPerMile(kwhPerMile, e) {
+  if (!(kwhPerMile > 0) || !(e.kwhPerGal > 0) || !(e.engineEff > 0)) return null;
+  return kwhPerMile * (e.evEff || 0.88) / (1 - Math.min(0.5, Math.max(0, e.regen || 0))) / (e.kwhPerGal * e.engineEff);
+}
 
 /**
  * Sum rows over [fromHour, toHour] and derive the per-window metrics. Rows may be stored sparse
  * (zero fields omitted). Ratios only use the miles of hours whose battery / charger data exists.
- *   opts: { mpg, grade, priceAt(hourIdx, grade) -> $/gal | null, efficiency, awayRate }
+ *   opts: { mpg, grade, priceAt(hourIdx, grade) -> $/gal | null, efficiency, awayRate,
+ *           energy: { kwhPerGal, engineEff, evEff, regen, fallbackKwhPerMile } (optional) }
+ * The energy-based fuel equivalent applies one measured driving rate (kWh/mi) to every mile of the
+ * window: the window's own raw hours with battery data (>= 50 mi), else its hours with any battery
+ * data, else the vehicle-wide rate passed in, else the wall-side rate. (Statistics-backfilled hours
+ * under-count driving energy, so their own values are not used.)
  */
 function windowMetrics(rows, fromHour, toHour, o) {
-  const s = { ...EMPTY }; let gallons = 0, fuelCost = 0, hours = 0, priced = 0, rawHours = 0, miSoc = 0, miHome = 0;
+  const s = { ...EMPTY }; let gallons = 0, fuelCost = 0, hours = 0, priced = 0, rawHours = 0, miSoc = 0, miHome = 0, rawMi = 0, rawDrive = 0;
+  const seen = [];
   for (let h = fromHour; h <= toHour; h++) {
     const r = rows[h]; if (!r) continue; hours++; if (r.src === 'raw') rawHours++;
     for (const k of Object.keys(EMPTY)) s[k] += r[k] || 0;
     const mi = r.mi || 0;
-    if (!r.nosoc) miSoc += mi;
+    if (!r.nosoc) { miSoc += mi; if (r.src === 'raw') { rawMi += mi; rawDrive += r.drive || 0; } }
     if (!r.nohome) miHome += mi;
-    if (mi > 0 && o.mpg > 0) {
-      const g = mi / o.mpg; gallons += g;
-      const p = o.priceAt(h, o.grade); if (p != null) { fuelCost += g * p; priced += mi; }
+    let p = null;
+    if (mi > 0) {
+      p = o.priceAt(h, o.grade);
+      if (o.mpg > 0) { const g = mi / o.mpg; gallons += g; if (p != null) { fuelCost += g * p; priced += mi; } }
     }
+    if (o.energy && mi > 0) seen.push({ mi, p });
   }
   const awayWall = s.away / (o.efficiency || 0.9);
   const evCost = s.cost + awayWall * (o.awayRate || 0);
+  // energy-based fuel equivalent
+  let eGal = 0, eCost = 0, basis = null, rate = null;
+  if (o.energy) {
+    const e = o.energy;
+    if (rawMi >= 50 && rawDrive > 0) { rate = rawDrive / rawMi; basis = 'raw'; }
+    else if (miSoc >= 50 && s.drive > 0) { rate = s.drive / miSoc; basis = 'battery'; }
+    else if (e.fallbackKwhPerMile > 0) { rate = e.fallbackKwhPerMile; basis = 'vehicle'; }
+    else if (miHome >= 50 && s.home > 0) { rate = s.home * (o.efficiency || 0.9) / miHome; basis = 'wall'; }
+    const gpm = gallonsPerMile(rate, e);
+    if (gpm) for (const { mi, p } of seen) { const g = gpm * mi; eGal += g; if (p != null) eCost += g * p; }
+    else basis = null;
+  }
   const m = {
     miles: r3(s.mi),
     home_energy: r3(s.home), home_cost: r2(s.cost),
     avg_rate: s.home > 0.01 ? r4(s.cost / s.home) : null,
     away_energy: r3(s.away), ev_cost: r2(evCost),
+    other_energy: r3(s.other), other_cost: r2(s.ocost),
     battery_energy: r3(s.pack), drive_energy: r3(s.drive), charged_energy: r3(s.chg),
     efficiency: s.drive > 0.1 && miSoc > 0 ? r2(miSoc / s.drive) : null,            // mi/kWh while driving
     consumption: miSoc > 0.5 && s.pack > 0 ? r1(s.pack / miSoc * 100) : null,       // kWh/100mi all-in (driving + idle)
@@ -162,9 +270,26 @@ function windowMetrics(rows, fromHour, toHour, o) {
     fuel_gallons: r2(gallons), fuel_cost: r2(fuelCost),
     savings: r2(fuelCost - evCost),
     savings_pct: fuelCost > 0 ? r1((fuelCost - evCost) / fuelCost * 100) : null,
+    energy_fuel_gallons: basis ? r2(eGal) : null, energy_fuel_cost: basis ? r2(eCost) : null,
+    energy_savings: basis ? r2(eCost - evCost) : null,
+    energy_mpg: basis && eGal > 0.01 ? r1(s.mi / eGal) : null,
+    energy_basis: basis, energy_kwh_per_mile: basis ? r3(rate) : null,
     hours, raw_hours: rawHours, miles_priced: r3(priced), miles_with_battery_data: r3(miSoc), miles_with_charger_data: r3(miHome),
   };
   return m;
+}
+
+/** Vehicle-wide driving kWh/mi for the energy-based fuel equivalent: raw hours with battery data (>= 50 mi), else all hours with battery data. */
+function driveRate(rows) {
+  let rawMi = 0, rawDrive = 0, mi = 0, drive = 0;
+  for (const r of Object.values(rows)) {
+    if (r.nosoc || !(r.mi > 0)) continue;
+    mi += r.mi; drive += r.drive || 0;
+    if (r.src === 'raw') { rawMi += r.mi; rawDrive += r.drive || 0; }
+  }
+  if (rawMi >= 50 && rawDrive > 0) return rawDrive / rawMi;
+  if (mi >= 50 && drive > 0) return drive / mi;
+  return null;
 }
 
 /** Storage form: zero fields and false flags dropped. expand() restores the full row. */
@@ -172,4 +297,4 @@ function compact(r) { const c = { src: r.src }; for (const k of Object.keys(EMPT
 function expand(c) { return { ...EMPTY, ...(c || {}) }; }
 const r1 = (v) => Math.round(v * 10) / 10, r2 = (v) => Math.round(v * 100) / 100, r4 = (v) => Math.round(v * 10000) / 10000;
 
-module.exports = { HOUR, hourOf, num, samples, integrateHours, milesByHour, movedBetween, socByHour, rowsFromRaw, rowsFromStats, windowMetrics, compact, expand, EMPTY };
+module.exports = { HOUR, hourOf, num, samples, integrateHours, milesByHour, movedBetween, socByHour, rowsFromRaw, rowsFromStats, sessions, validateSessions, settleAway, gallonsPerMile, driveRate, windowMetrics, compact, expand, EMPTY };

@@ -13,9 +13,12 @@
  *    window carries all of that window's metrics as attributes.
  *  - Fuel prices: EIA weekly retail prices per region (history to the 1990s, no key) and AAA's daily
  *    state / metro averages. Published as sensor.fuel_price_<grade>; the per-day series prices the
- *    "what would this have cost in gasoline" numbers (vehicle helper: fuel grade + equivalent MPG).
+ *    "what would this have cost in gasoline" numbers two ways: an assumed equivalent MPG (vehicle
+ *    helpers: fuel grade + MPG) and from the measured driving energy (kWh/mi -> wheel energy ->
+ *    gallons at a gasoline / diesel energy content and engine efficiency; Settings).
  *  - Long-term statistics (evstats:<vehicle>_miles, _home_energy, _home_cost, _battery_energy,
- *    _fuel_gallons, _fuel_cost, _savings; evstats:fuel_price_<grade>) for history graphs.
+ *    _fuel_gallons, _fuel_cost, _savings, _energy_fuel_gallons, _energy_fuel_cost, _energy_savings;
+ *    evstats:fuel_price_<grade>) for history graphs.
  *  - Config panel + status on the ingress port (7120).
  *
  * Config  /data/config.json (add-on) or ~/.config/ev-stats/config.json   State /data/state.json, rollup.json, fuel.json
@@ -42,6 +45,8 @@ const METRICS = { // key: [unit, icon, label, precision]
   avg_rate: ['USD/kWh', 'mdi:cash-clock', 'Average rate', 3],
   away_energy: ['kWh', 'mdi:map-marker-distance', 'Away charging (est.)', 1],
   ev_cost: ['USD', 'mdi:cash-multiple', 'EV energy cost', 2],
+  other_energy: ['kWh', 'mdi:car-multiple', 'Charger energy not this vehicle', 1],
+  other_cost: ['USD', 'mdi:cash-remove', 'Charger cost not this vehicle', 2],
   battery_energy: ['kWh', 'mdi:battery-arrow-down', 'Battery energy used', 1],
   drive_energy: ['kWh', 'mdi:car-electric', 'Driving energy', 1],
   charged_energy: ['kWh', 'mdi:battery-arrow-up', 'Energy charged', 1],
@@ -53,18 +58,33 @@ const METRICS = { // key: [unit, icon, label, precision]
   fuel_cost: ['USD', 'mdi:gas-station-outline', 'Fuel cost equivalent', 2],
   savings: ['USD', 'mdi:piggy-bank', 'Savings vs fuel', 2],
   savings_pct: ['%', 'mdi:percent', 'Savings percent', 1],
+  energy_fuel_gallons: ['gal', 'mdi:gas-station', 'Fuel equivalent (energy)', 2],
+  energy_fuel_cost: ['USD', 'mdi:gas-station-outline', 'Fuel cost equivalent (energy)', 2],
+  energy_savings: ['USD', 'mdi:piggy-bank-outline', 'Savings vs fuel (energy)', 2],
+  energy_mpg: ['mpg', 'mdi:engine', 'Equivalent MPG (energy)', 1],
 };
-const STAT_KEYS = { miles: ['mi', 'mi'], home_energy: ['home', 'kWh'], home_cost: ['cost', 'USD'], battery_energy: ['pack', 'kWh'], fuel_gallons: ['gal', 'gal'], fuel_cost: ['fuel', 'USD'], savings: ['save', 'USD'] };
-const DEFAULT_VEHICLE = { id: '', name: '', enabled: true, charger_select: '', odometer: '', soc: '', capacity_kwh: 0, capacity_entity: '', charge_efficiency: 0.9, fuel_select: '', mpg_entity: '', fuel_grade: 'regular', mpg: 20 };
+const STAT_KEYS = { miles: ['mi', 'mi'], home_energy: ['home', 'kWh'], home_cost: ['cost', 'USD'], battery_energy: ['pack', 'kWh'], fuel_gallons: ['gal', 'gal'], fuel_cost: ['fuel', 'USD'], savings: ['save', 'USD'], energy_fuel_gallons: ['egal', 'gal'], energy_fuel_cost: ['efuel', 'USD'], energy_savings: ['esave', 'USD'], other_energy: ['other', 'kWh'], other_cost: ['ocost', 'USD'] };
+const DEFAULT_VEHICLE = { id: '', name: '', enabled: true, charger_select: '', odometer: '', soc: '', capacity_kwh: 0, capacity_entity: '', charge_efficiency: 0.9, fuel_select: '', mpg_entity: '', fuel_grade: 'regular', mpg: 20, engine_efficiency: 0 };
+// Energy-based fuel equivalent: measured driving kWh/mi -> wheel energy -> gallons an engine would burn for it.
+//   kWh per gallon: lower heating value used by the EPA for MPGe (gasoline 33.7 kWh = 115,000 BTU; diesel 37.7 kWh = 128,500 BTU)
+//   engine efficiency: tank-to-wheel of a modern engine + transmission over a mixed drive cycle (gasoline ~25 %, diesel ~30 %)
+//   ev efficiency: battery-to-wheel (inverter + motor + gearbox) ~88 %; regen share: part of the driving energy that was
+//   recovered by regenerative braking and that an engine car would have to burn fuel for (mixed driving ~10 %)
+const DEFAULT_ENERGY = { gasoline_kwh_per_gal: 33.7, diesel_kwh_per_gal: 37.7, engine_efficiency_gasoline: 0.25, engine_efficiency_diesel: 0.30, ev_drivetrain_efficiency: 0.88, regen_share: 0.10 };
 const DEFAULT_CONFIG = {
   ha_url: 'http://homeassistant.local:8123', ha_token: '', port: 7120,
   poll_minutes: 5, recent_hours: 6, raw_days: 9, backfill_from: '2024-01-01',
   rate_entity: 'sensor.electricity_rate', entity_prefix: 'ev',
   windows: ['1d', '7d', '30d', '365d'],
-  metrics: ['miles', 'home_energy', 'home_cost', 'battery_energy', 'efficiency', 'consumption', 'cost_per_mile', 'fuel_gallons', 'fuel_cost', 'savings'],
+  metrics: ['miles', 'home_energy', 'home_cost', 'battery_energy', 'efficiency', 'consumption', 'cost_per_mile', 'fuel_gallons', 'fuel_cost', 'savings', 'energy_fuel_gallons', 'energy_fuel_cost', 'energy_savings', 'energy_mpg'],
   chargers: {},   // { North: { power: 'sensor.xxx_power' }, South: {...} } - keys must match the charger helper's options
   vehicles: [],   // DEFAULT_VEHICLE shape, edited in the panel
   away_rate: 0.45, // USD/kWh assumed for charging that did not come from a home charger (DC fast charging)
+  energy_model: { ...DEFAULT_ENERGY },
+  // A charging session on the assigned port whose battery gain is below match_fraction x wall x efficiency is booked as another
+  // vehicle's (other_energy / other_cost). Sessions under min_kwh, or whose largest hour is under min_peak_kwh (thermal trickle),
+  // are left alone. lag_hours: how late a sleeping car may report the gain (also the memory of the away-charging estimate).
+  session_check: { enabled: true, min_kwh: 3, min_peak_kwh: 4, match_fraction: 0.5, lag_hours: 12 },
   mqtt: { enabled: true },
   statistics: { enabled: true, prefix: 'evstats' },
   fuel: { enabled: true, eia_area: 'R20', eia_area_name: 'Midwest', aaa_state: 'MO', aaa_area: 'Kansas City', poll_hours: 6, history_from: '2024-01-01', entity_prefix: 'fuel_price' },
@@ -80,7 +100,12 @@ let fuel = loadJson(FUEL_PATH, { weekly: {}, weekly_at: 0, daily: {}, aaa: null,
 let rollupDirty = false;
 
 function normalizeConfig() {
-  config = { ...DEFAULT_CONFIG, ...config, ...SUPERVISOR, mqtt: { ...DEFAULT_CONFIG.mqtt, ...(config.mqtt || {}) }, statistics: { ...DEFAULT_CONFIG.statistics, ...(config.statistics || {}) }, fuel: { ...DEFAULT_CONFIG.fuel, ...(config.fuel || {}) } };
+  config = { ...DEFAULT_CONFIG, ...config, ...SUPERVISOR, mqtt: { ...DEFAULT_CONFIG.mqtt, ...(config.mqtt || {}) }, statistics: { ...DEFAULT_CONFIG.statistics, ...(config.statistics || {}) }, fuel: { ...DEFAULT_CONFIG.fuel, ...(config.fuel || {}) }, energy_model: { ...DEFAULT_ENERGY, ...(config.energy_model || {}) }, session_check: { ...DEFAULT_CONFIG.session_check, ...(config.session_check || {}) } };
+  const em = config.energy_model, clamp = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? n : d; };
+  const sc = config.session_check; sc.enabled = sc.enabled !== false; sc.min_kwh = clamp(sc.min_kwh, 0, 100, 3); sc.min_peak_kwh = clamp(sc.min_peak_kwh, 0, 50, 4); sc.match_fraction = clamp(sc.match_fraction, 0.05, 1, 0.5); sc.lag_hours = Math.round(clamp(sc.lag_hours, 1, 48, 12));
+  em.gasoline_kwh_per_gal = clamp(em.gasoline_kwh_per_gal, 20, 50, DEFAULT_ENERGY.gasoline_kwh_per_gal); em.diesel_kwh_per_gal = clamp(em.diesel_kwh_per_gal, 20, 50, DEFAULT_ENERGY.diesel_kwh_per_gal);
+  em.engine_efficiency_gasoline = clamp(em.engine_efficiency_gasoline, 0.05, 0.6, DEFAULT_ENERGY.engine_efficiency_gasoline); em.engine_efficiency_diesel = clamp(em.engine_efficiency_diesel, 0.05, 0.6, DEFAULT_ENERGY.engine_efficiency_diesel);
+  em.ev_drivetrain_efficiency = clamp(em.ev_drivetrain_efficiency, 0.5, 1, DEFAULT_ENERGY.ev_drivetrain_efficiency); em.regen_share = clamp(em.regen_share, 0, 0.5, DEFAULT_ENERGY.regen_share);
   config.poll_minutes = Math.max(1, Number(config.poll_minutes) || 5);
   config.recent_hours = Math.min(48, Math.max(2, Number(config.recent_hours) || 6));
   config.raw_days = Math.min(30, Math.max(1, Number(config.raw_days) || 9));
@@ -91,7 +116,7 @@ function normalizeConfig() {
   config.windows = [...new Set((config.windows || []).map((w) => String(w).trim().toLowerCase()).filter(windowRange))];
   if (!config.windows.length) config.windows = [...DEFAULT_CONFIG.windows];
   config.metrics = (config.metrics || []).filter((m) => METRICS[m]); if (!config.metrics.length) config.metrics = [...DEFAULT_CONFIG.metrics];
-  config.vehicles = (config.vehicles || []).map((v) => ({ ...DEFAULT_VEHICLE, ...v, id: slug(v.id || v.name || 'ev'), capacity_kwh: Number(v.capacity_kwh) || 0, charge_efficiency: Math.min(1, Math.max(0.5, Number(v.charge_efficiency) || 0.9)), mpg: Number(v.mpg) || 20, fuel_grade: F.GRADES.includes(v.fuel_grade) ? v.fuel_grade : 'regular' }));
+  config.vehicles = (config.vehicles || []).map((v) => ({ ...DEFAULT_VEHICLE, ...v, id: slug(v.id || v.name || 'ev'), capacity_kwh: Number(v.capacity_kwh) || 0, charge_efficiency: Math.min(1, Math.max(0.5, Number(v.charge_efficiency) || 0.9)), mpg: Number(v.mpg) || 20, fuel_grade: F.GRADES.includes(v.fuel_grade) ? v.fuel_grade : 'regular', engine_efficiency: clamp(v.engine_efficiency, 0.05, 0.6, 0) }));
   config.chargers = Object.fromEntries(Object.entries(config.chargers || {}).filter(([k, v]) => k && v && v.power).map(([k, v]) => [k.trim(), { power: String(v.power).trim() }]));
 }
 function slug(s) { return String(s || '').replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '').toLowerCase(); }
@@ -181,7 +206,12 @@ function vehicleSettings(v, states) {
   if (v.fuel_select) { const g = F.GRADES.find((k) => String(st(v.fuel_select) || '').toLowerCase().startsWith(k.slice(0, 3))); if (g) grade = g; }
   if (v.mpg_entity) { const n = Number(st(v.mpg_entity)); if (n > 0) mpg = n; }
   if (v.capacity_entity) { const n = Number(st(v.capacity_entity)); if (n > 0) cap = n; }
-  return { grade, mpg, capacity: cap };
+  return { grade, mpg, capacity: cap, energy: energyFor(v, grade) };
+}
+/** Parameters of the energy-based fuel equivalent for a vehicle / grade (diesel has its own energy content and engine efficiency). */
+function energyFor(v, grade) {
+  const em = config.energy_model, diesel = grade === 'diesel';
+  return { kwhPerGal: diesel ? em.diesel_kwh_per_gal : em.gasoline_kwh_per_gal, engineEff: v.engine_efficiency || (diesel ? em.engine_efficiency_diesel : em.engine_efficiency_gasoline), evEff: em.ev_drivetrain_efficiency, regen: em.regen_share, fallbackKwhPerMile: R.driveRate(rollup[v.id] || {}) };
 }
 
 // ---------- rollup ----------
@@ -220,6 +250,26 @@ function setAssignments(v, list) {
   if (out.length) out[0].at = 0;
   state.assignments[v.id] = out; saveState();
 }
+/** The vehicle's latest charging sessions (newest first) with the charger that was assigned and the match verdict. */
+function sessionList(v, limit = 25) {
+  const at = chargerAt(v), eff = v.charge_efficiency || 0.9;
+  return R.sessions(rollup[v.id] || {}, config.session_check.lag_hours).slice(-limit).reverse().map((s) => ({
+    start: new Date(s.start * HOUR).toISOString(), end: new Date((s.end + 1) * HOUR).toISOString(), hours: s.hours, charger: at(s.start),
+    wall_kwh: s.wall, cost: +s.cost.toFixed(2), battery_kwh: s.nosoc ? null : s.gained, ratio: s.nosoc || !s.wall ? null : +(s.gained / (s.wall * eff)).toFixed(2), peak_kwh: s.peak,
+    verdict: s.other ? 'other' : s.nosoc ? 'unknown' : 'this',
+  }));
+}
+/** Per charger port: who was assigned to it over time, from every vehicle's charger history (newest first). */
+function portTimeline() {
+  const out = {};
+  for (const name of Object.keys(config.chargers)) out[name] = [];
+  for (const v of config.vehicles) {
+    const list = state.assignments[v.id] || [];
+    list.forEach((a, i) => { if (a.charger && out[a.charger]) out[a.charger].push({ vehicle: v.name, from: a.at ? new Date(a.at).toISOString() : null, to: i + 1 < list.length ? new Date(list[i + 1].at).toISOString() : null }); });
+  }
+  for (const list of Object.values(out)) list.sort((a, b) => (b.from || '') < (a.from || '') ? -1 : 1);
+  return out;
+}
 function earliestHour(ids) { let e = null; for (const id of ids) for (const h of Object.keys(rollup[id] || {})) if (e == null || +h < e) e = +h; return e; }
 
 // ---------- windows ----------
@@ -248,7 +298,7 @@ function metricsFor(v, set, series, nowMs) {
   const priceAt = (h, grade) => { const p = series.price(dayKey(h), grade); return p ? p.price : null; };
   for (const key of config.windows) {
     const wr = windowRange(key, nowMs); if (!wr) continue;
-    const m = R.windowMetrics(rows, wr.from, wr.to, { mpg: set.mpg, grade: set.grade, priceAt, efficiency: v.charge_efficiency, awayRate: config.away_rate });
+    const m = R.windowMetrics(rows, wr.from, wr.to, { mpg: set.mpg, grade: set.grade, priceAt, efficiency: v.charge_efficiency, awayRate: config.away_rate, energy: set.energy });
     out[key] = { ...m, window: key, window_label: wr.label, from: new Date(wr.from * HOUR).toISOString(), to: new Date((wr.to + 1) * HOUR).toISOString() };
   }
   return out;
@@ -274,7 +324,7 @@ async function publishVehicle(v, set, metrics, live) {
     await mqttPub(`homeassistant/device/${dev}/config`, payload);
     state.published[dev] = Object.keys(comps); discoveryFresh.add(dev);
   }
-  for (const [key, m] of Object.entries(metrics)) await mqttPub(`${base}/${key}`, { ...m, vehicle: v.name, charger: live.charger, fuel_grade: set.grade, mpg_equivalent: set.mpg, capacity_kwh: set.capacity, charge_efficiency: v.charge_efficiency, away_rate: config.away_rate, updated: new Date().toISOString() });
+  for (const [key, m] of Object.entries(metrics)) await mqttPub(`${base}/${key}`, { ...m, vehicle: v.name, charger: live.charger, fuel_grade: set.grade, mpg_equivalent: set.mpg, capacity_kwh: set.capacity, charge_efficiency: v.charge_efficiency, away_rate: config.away_rate, kwh_per_gallon: set.energy.kwhPerGal, engine_efficiency: set.energy.engineEff, ev_drivetrain_efficiency: set.energy.evEff, regen_share: set.energy.regen, updated: new Date().toISOString() });
   await mqttPub(`${base}/now`, live);
 }
 async function publishFuel(prices) {
@@ -335,14 +385,16 @@ async function importVehicleStats(w, v, set, series) {
   if (!config.statistics.enabled) return;
   const rows = rollup[v.id] || {}; const hours = Object.keys(rows).map(Number).sort((a, b) => a - b);
   if (!hours.length) return;
-  const settingKey = `${set.grade}|${set.mpg}|${config.away_rate}|${v.charge_efficiency}`;
+  const e = set.energy, gpm = R.gallonsPerMile(e.fallbackKwhPerMile, e) || 0; // vehicle-wide measured rate applied to every hour's miles
+  const settingKey = `v2|${set.grade}|${set.mpg}|${config.away_rate}|${v.charge_efficiency}|${gpm.toFixed(5)}`;
   if (state.settings[v.id] !== settingKey) { state.settings[v.id] = settingKey; state.stats_cursor[v.id] = hours[0]; }
   const from = state.stats_cursor[v.id]; if (from == null) return;
   const per = {}; for (const k of Object.keys(STAT_KEYS)) per[k] = [];
   const sums = {}; for (const k of Object.keys(STAT_KEYS)) sums[k] = 0;
   for (const h of hours) {
     const r = R.expand(rows[h]); const p = series.price(dayKey(h), set.grade); const gal = set.mpg > 0 ? r.mi / set.mpg : 0; const fuelCost = p ? gal * p.price : 0;
-    const vals = { miles: r.mi, home_energy: r.home, home_cost: r.cost, battery_energy: r.pack, fuel_gallons: gal, fuel_cost: fuelCost, savings: fuelCost - r.cost - r.away / (v.charge_efficiency || 0.9) * config.away_rate };
+    const egal = gpm * r.mi, efuel = p ? egal * p.price : 0, evCost = r.cost + r.away / (v.charge_efficiency || 0.9) * config.away_rate;
+    const vals = { miles: r.mi, home_energy: r.home, home_cost: r.cost, battery_energy: r.pack, fuel_gallons: gal, fuel_cost: fuelCost, savings: fuelCost - evCost, energy_fuel_gallons: egal, energy_fuel_cost: efuel, energy_savings: efuel - evCost, other_energy: r.other, other_cost: r.ocost };
     for (const k of Object.keys(STAT_KEYS)) { sums[k] += vals[k]; if (h >= from) per[k].push({ start: new Date(h * HOUR).toISOString(), state: +vals[k].toFixed(4), sum: +sums[k].toFixed(4) }); }
   }
   for (const [k, [, unit]] of Object.entries(STAT_KEYS)) {
@@ -399,11 +451,18 @@ async function poll(opts = {}) {
         } else {
           await recompute(w, v, set, R.hourOf(now - config.recent_hours * HOUR) * HOUR, now);
         }
+        const sc = config.session_check;
+        const lowV = R.validateSessions(rollup[v.id], v.charge_efficiency, sc.enabled ? { minKwh: sc.min_kwh, minPeakKwh: sc.min_peak_kwh, matchFraction: sc.match_fraction, lagHours: sc.lag_hours } : { minKwh: Infinity });
+        const lowA = R.settleAway(rollup[v.id], v.charge_efficiency, sc.lag_hours);
+        const low = lowV == null ? lowA : lowA == null ? lowV : Math.min(lowV, lowA);
+        if (low != null) { rollupDirty = true; state.stats_cursor[v.id] = Math.min(state.stats_cursor[v.id] ?? low, low); }
+        set.energy = energyFor(v, set.grade); // the vehicle-wide driving rate may have changed with the new rows
         const metrics = metricsFor(v, set, series, now);
         const pw = charger && config.chargers[charger] ? states.find((x) => x.entity_id === config.chargers[charger].power) : null;
         const price = series.price(tz.parts(now).ds, set.grade);
-        const live = { charger, charger_power_kw: pw ? R.num(pw.state) : null, charging: pw ? R.num(pw.state) > 0.1 : null, fuel_grade: set.grade, fuel_price: price ? price.price : null, fuel_price_source: price ? price.source : null, mpg_equivalent: set.mpg, capacity_kwh: set.capacity, charge_efficiency: v.charge_efficiency, updated: new Date().toISOString() };
-        results[v.id] = { name: v.name, charger, settings: set, metrics, live, hours: Object.keys(rollup[v.id]).length, first_hour: earliestHour([v.id]) };
+        const gpm = R.gallonsPerMile(set.energy.fallbackKwhPerMile, set.energy);
+        const live = { charger, charger_power_kw: pw ? R.num(pw.state) : null, charging: pw ? R.num(pw.state) > 0.1 : null, fuel_grade: set.grade, fuel_price: price ? price.price : null, fuel_price_source: price ? price.source : null, mpg_equivalent: set.mpg, energy_mpg: gpm ? +(1 / gpm).toFixed(1) : null, drive_kwh_per_mile: set.energy.fallbackKwhPerMile ? +set.energy.fallbackKwhPerMile.toFixed(3) : null, capacity_kwh: set.capacity, charge_efficiency: v.charge_efficiency, updated: new Date().toISOString() };
+        results[v.id] = { name: v.name, charger, settings: set, metrics, live, hours: Object.keys(rollup[v.id]).length, first_hour: earliestHour([v.id]), sessions: sessionList(v, 25) };
         if (config.mqtt.enabled) await publishVehicle(v, set, metrics, live);
         await importVehicleStats(w, v, set, series);
       }
@@ -449,14 +508,15 @@ async function api(req, res, url) {
   if (req.method === 'GET' && p === '/api/config') return json(res, 200, { ...config, ha_token: config.ha_token ? '••••' : '', supervised: !!process.env.SUPERVISOR_TOKEN, metric_defs: METRICS, grades: F.GRADES });
   if (req.method === 'POST' && p === '/api/config') {
     const b = await readBody(req);
-    for (const k of ['poll_minutes', 'recent_hours', 'raw_days', 'backfill_from', 'rate_entity', 'entity_prefix', 'windows', 'metrics', 'chargers', 'vehicles', 'away_rate', 'mqtt', 'statistics', 'fuel']) if (b[k] !== undefined) config[k] = b[k];
+    for (const k of ['poll_minutes', 'recent_hours', 'raw_days', 'backfill_from', 'rate_entity', 'entity_prefix', 'windows', 'metrics', 'chargers', 'vehicles', 'away_rate', 'energy_model', 'session_check', 'mqtt', 'statistics', 'fuel']) if (b[k] !== undefined) config[k] = b[k];
     if (b.ha_url && !process.env.SUPERVISOR_TOKEN) config.ha_url = b.ha_url;
     if (b.ha_token && b.ha_token !== '••••' && !process.env.SUPERVISOR_TOKEN) config.ha_token = b.ha_token;
     config.away_rate = Math.max(0, Number(config.away_rate) || 0);
     normalizeConfig(); saveConfig(); schedule();
     return json(res, 200, { ok: true, config: { ...config, ha_token: config.ha_token ? '••••' : '' } });
   }
-  if (req.method === 'GET' && p === '/api/status') return json(res, 200, { last: state.last, error: lastErr, assignments: state.assignments, backfilled: state.backfilled, log: state.log.slice(0, 60), version: VERSION, uptime_s: Math.round(process.uptime()), tz: haTz, fuel: { weekly_at: fuel.weekly_at, aaa_at: fuel.aaa_at, eia_error: fuel.eia_error, aaa_error: fuel.aaa_error, areas: fuel.aaa && fuel.aaa.areas, weeks: fuel.weekly.regular ? fuel.weekly.regular.length : 0, days: Object.keys(fuel.daily).length }, polling });
+  if (req.method === 'GET' && p === '/api/sessions') { const v = config.vehicles.find((x) => x.id === url.searchParams.get('vehicle')); return v ? json(res, 200, { vehicle: v.id, sessions: sessionList(v, Number(url.searchParams.get('limit')) || 200) }) : json(res, 404, { error: 'unknown vehicle' }); }
+  if (req.method === 'GET' && p === '/api/status') return json(res, 200, { last: state.last, error: lastErr, assignments: state.assignments, ports: portTimeline(), backfilled: state.backfilled, log: state.log.slice(0, 60), version: VERSION, uptime_s: Math.round(process.uptime()), tz: haTz, fuel: { weekly_at: fuel.weekly_at, aaa_at: fuel.aaa_at, eia_error: fuel.eia_error, aaa_error: fuel.aaa_error, areas: fuel.aaa && fuel.aaa.areas, weeks: fuel.weekly.regular ? fuel.weekly.regular.length : 0, days: Object.keys(fuel.daily).length }, polling });
   if (req.method === 'POST' && p === '/api/poll') return json(res, 200, await poll());
   if (req.method === 'POST' && p === '/api/rebuild') { const b = await readBody(req); return json(res, 200, await poll({ rebuild: b.vehicle || 'all' })); }
   if (req.method === 'POST' && p === '/api/fuel/refresh') return json(res, 200, await poll({ fuelForce: true }));

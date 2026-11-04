@@ -84,6 +84,7 @@
     <p class="hint">Name each home charger exactly as it appears in the vehicles' charger helper options (e.g. <code>North</code>, <code>South</code>) and give its power sensor (kW). Energy is integrated from that sensor's history.</p>
     <table id="chargers"><thead><tr><th>Name</th><th>Power sensor</th><th></th></tr></thead><tbody></tbody></table>
     <div class="row"><button id="charger-add" class="btn sec sm">Add charger</button></div>
+    <div id="ports" class="hint"></div>
   </div>
   <div id="vehicles"></div>
   <div class="row">
@@ -120,6 +121,30 @@
       <label class="f">Backfill from (hourly statistics) <input type="date" id="backfill-from"></label>
       <label class="f">Rate sensor (attribute <code>plans</code>) <input type="text" id="rate-entity" class="w"></label>
       <label class="f">Assumed price away from home (USD/kWh) <input type="number" id="away-rate" min="0" step="0.01"></label>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Fuel equivalent from energy</h2>
+    <p class="hint">Besides the assumed-MPG comparison, the measured driving energy (kWh per mile from the state of charge while the odometer moves) is turned into the fuel an engine would burn for the same work: wheel energy = kWh/mi × EV drivetrain efficiency ÷ (1 − regen share); gallons = wheel energy ÷ (kWh per gallon × engine efficiency). Published as <code>energy_fuel_gallons</code>, <code>energy_fuel_cost</code>, <code>energy_savings</code> and the implied <code>energy_mpg</code>.</p>
+    <div class="grid">
+      <label class="f">Gasoline energy (kWh per gallon) <input type="number" id="em-gas-kwh" min="20" max="50" step="0.1"></label>
+      <label class="f">Diesel energy (kWh per gallon) <input type="number" id="em-diesel-kwh" min="20" max="50" step="0.1"></label>
+      <label class="f">Gasoline engine + transmission efficiency (tank → wheel) <input type="number" id="em-gas-eff" min="0.05" max="0.6" step="0.01"></label>
+      <label class="f">Diesel engine + transmission efficiency <input type="number" id="em-diesel-eff" min="0.05" max="0.6" step="0.01"></label>
+      <label class="f">EV drivetrain efficiency (battery → wheel) <input type="number" id="em-ev-eff" min="0.5" max="1" step="0.01"></label>
+      <label class="f">Regen share (of driving energy recovered by regenerative braking) <input type="number" id="em-regen" min="0" max="0.5" step="0.01"></label>
+    </div>
+    <p class="hint">Defaults: 33.7 / 37.7 kWh per gallon (the EPA's lower heating values behind MPGe), 25 % / 30 % engine efficiency over a mixed drive cycle, 88 % EV drivetrain, 10 % regen. A vehicle can override the engine efficiency on the Vehicles tab.</p>
+  </div>
+  <div class="card">
+    <h2>Charging session check</h2>
+    <p class="hint">A session on the vehicle's assigned port whose battery gain is far below the wall energy was another car: its kWh and cost are booked as <code>other_energy</code> / <code>other_cost</code> instead of the vehicle's home charging. The Status tab lists the sessions with the verdict.</p>
+    <div class="grid">
+      <label class="f">Check sessions <input type="checkbox" id="sc-enabled" style="display:inline-block;width:auto"></label>
+      <label class="f">Ignore sessions under (kWh) <input type="number" id="sc-min" min="0" step="0.5"></label>
+      <label class="f">Ignore sessions whose largest hour is under (kWh) – thermal trickle <input type="number" id="sc-peak" min="0" step="0.5"></label>
+      <label class="f">Battery gain must reach this fraction of wall × efficiency <input type="number" id="sc-frac" min="0.05" max="1" step="0.05"></label>
+      <label class="f">Hours a sleeping car may report its gain late <input type="number" id="sc-lag" min="1" max="48"></label>
     </div>
   </div>
   <div class="card">
@@ -166,21 +191,29 @@ async function loadStatus() {
   const last = status.last || {};
   $('#st-last').textContent = last.at ? `last run ${ago(last.at)} (${last.ms} ms)` + (last.error ? ` – error: ${last.error}` : '') : 'not run yet';
   const defs = cfg ? cfg.metric_defs : {};
-  const order = ['miles', 'home_energy', 'home_cost', 'avg_rate', 'away_energy', 'ev_cost', 'battery_energy', 'drive_energy', 'charged_energy', 'efficiency', 'consumption', 'wall_consumption', 'cost_per_mile', 'fuel_gallons', 'fuel_cost', 'savings', 'savings_pct'];
+  const order = ['miles', 'home_energy', 'home_cost', 'avg_rate', 'away_energy', 'other_energy', 'other_cost', 'ev_cost', 'battery_energy', 'drive_energy', 'charged_energy', 'efficiency', 'consumption', 'wall_consumption', 'cost_per_mile', 'fuel_gallons', 'fuel_cost', 'savings', 'savings_pct', 'energy_mpg', 'energy_fuel_gallons', 'energy_fuel_cost', 'energy_savings'];
   let html = '';
   for (const [vid, v] of Object.entries(last.vehicles || {})) {
     const wins = Object.keys(v.metrics || {});
     const s = v.settings || {}, live = v.live || {};
     const asg = (status.assignments || {})[vid] || [];
-    html += `<div class="card"><h2>${esc(v.name)} <span class="sub">charger <b>${esc(live.charger || 'none')}</b>${live.charging ? ' · charging ' + fmt(live.charger_power_kw, 1) + ' kW' : ''} · vs ${esc(s.grade)} at ${fmt(s.mpg, 1)} mpg (${live.fuel_price != null ? '$' + fmt(live.fuel_price, 3) + '/gal ' + esc(live.fuel_price_source || '') : 'no price'}) · ${fmt(s.capacity, 1)} kWh pack</span></h2>`;
+    html += `<div class="card"><h2>${esc(v.name)} <span class="sub">charger <b>${esc(live.charger || 'none')}</b>${live.charging ? ' · charging ' + fmt(live.charger_power_kw, 1) + ' kW' : ''} · vs ${esc(s.grade)} at ${fmt(s.mpg, 1)} mpg assumed${live.energy_mpg != null ? ' / ' + fmt(live.energy_mpg, 1) + ' mpg from energy (' + fmt(live.drive_kwh_per_mile, 3) + ' kWh/mi)' : ''} (${live.fuel_price != null ? '$' + fmt(live.fuel_price, 3) + '/gal ' + esc(live.fuel_price_source || '') : 'no price'}) · ${fmt(s.capacity, 1)} kWh pack</span></h2>`;
     html += `<table><thead><tr><th>Metric</th>${wins.map((w) => `<th class="n">${esc(w)}</th>`).join('')}<th></th></tr></thead><tbody>`;
     for (const m of order) {
       if (!defs[m]) continue; const [unit, , label, prec] = defs[m];
-      html += `<tr><td>${esc(label)}</td>${wins.map((w) => { const val = v.metrics[w][m]; const cls = m === 'savings' || m === 'savings_pct' ? (val < 0 ? ' neg' : val > 0 ? ' pos' : '') : ''; return `<td class="n${cls}">${unit === 'USD' ? money(val) : fmt(val, prec)}</td>`; }).join('')}<td class="u">${esc(unit)}</td></tr>`;
+      html += `<tr><td>${esc(label)}</td>${wins.map((w) => { const val = v.metrics[w][m]; const cls = m === 'savings' || m === 'savings_pct' || m === 'energy_savings' ? (val < 0 ? ' neg' : val > 0 ? ' pos' : '') : ''; return `<td class="n${cls}">${unit === 'USD' ? money(val) : fmt(val, prec)}</td>`; }).join('')}<td class="u">${esc(unit)}</td></tr>`;
     }
     html += `</tbody></table>`;
-    const cov = wins.map((w) => { const m = v.metrics[w]; return `${w}: ${m.raw_hours}/${m.hours} h raw` + (m.miles_with_battery_data < m.miles - 0.5 ? `, battery data for ${fmt(m.miles_with_battery_data, 0)} of ${fmt(m.miles, 0)} mi` : '') + (m.miles_with_charger_data < m.miles - 0.5 ? `, charger data for ${fmt(m.miles_with_charger_data, 0)} mi` : ''); }).join(' · ');
-    html += `<p class="hint">Coverage – ${esc(cov)}. Charger history: ${asg.map((a) => `${a.charger || 'none'} from ${a.at ? new Date(a.at).toLocaleDateString() : 'the beginning'}`).join(', ') || 'none'} (edit on the Vehicles tab).</p></div>`;
+    const cov = wins.map((w) => { const m = v.metrics[w]; return `${w}: ${m.raw_hours}/${m.hours} h raw` + (m.miles_with_battery_data < m.miles - 0.5 ? `, battery data for ${fmt(m.miles_with_battery_data, 0)} of ${fmt(m.miles, 0)} mi` : '') + (m.miles_with_charger_data < m.miles - 0.5 ? `, charger data for ${fmt(m.miles_with_charger_data, 0)} mi` : '') + (m.energy_basis ? `, energy rate ${fmt(m.energy_kwh_per_mile, 3)} kWh/mi (${m.energy_basis})` : ''); }).join(' · ');
+    html += `<p class="hint">Coverage – ${esc(cov)}. Charger history: ${asg.map((a) => `${a.charger || 'none'} from ${a.at ? new Date(a.at).toLocaleDateString() : 'the beginning'}`).join(', ') || 'none'} (edit on the Vehicles tab).</p>`;
+    const ss = v.sessions || [];
+    if (ss.length) {
+      const verdict = { this: '<span class="pill on">this vehicle</span>', other: '<span class="pill crit">not this vehicle</span>', unknown: '<span class="pill">no battery data</span>' };
+      html += `<details><summary class="hint">Charging sessions (latest ${ss.length}) – ${ss.filter((s) => s.verdict === 'other').length} booked as another vehicle's</summary><table><thead><tr><th>Start</th><th class="n">Hours</th><th>Port</th><th class="n">Wall kWh</th><th class="n">Battery kWh</th><th class="n">Ratio</th><th class="n">Cost</th><th>Verdict</th></tr></thead><tbody>`;
+      for (const s of ss) html += `<tr><td>${new Date(s.start).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric' })}</td><td class="n">${s.hours}</td><td>${esc(s.charger || '–')}</td><td class="n">${fmt(s.wall_kwh, 1)}</td><td class="n">${fmt(s.battery_kwh, 1)}</td><td class="n">${fmt(s.ratio, 2)}</td><td class="n">${money(s.cost)}</td><td>${verdict[s.verdict] || ''}</td></tr>`;
+      html += `</tbody></table></details>`;
+    }
+    html += `</div>`;
   }
   $('#st-vehicles').innerHTML = html || '<div class="card"><p class="hint">No vehicles configured yet – add them on the Vehicles tab.</p></div>';
   const f = last.fuel || {}; const tb = $('#st-fuel tbody'); tb.innerHTML = '';
@@ -205,6 +238,8 @@ function renderVehicles() {
   for (const [name, c] of Object.entries(cfg.chargers || {})) tb.insertAdjacentHTML('beforeend', `<tr><td><input type="text" class="m ch-name" value="${esc(name)}"></td><td><input type="text" class="w ch-power" list="dl-power" value="${esc(c.power)}"></td><td><button class="lnk del ch-del">remove</button></td></tr>`);
   tb.querySelectorAll('.ch-del').forEach((b) => b.addEventListener('click', () => { b.closest('tr').remove(); readChargers(); }));
   tb.querySelectorAll('input').forEach((i) => i.addEventListener('input', readChargers));
+  const ports = (status && status.ports) || {};
+  $('#ports').innerHTML = Object.keys(ports).length ? '<b>Port timeline</b> (from every vehicle\'s charger history; sessions that no assigned vehicle\'s battery took are listed per vehicle on the Status tab): ' + Object.entries(ports).map(([n, list]) => `<br><b>${esc(n)}</b>: ${list.map((a) => `${esc(a.vehicle)} ${a.from ? 'from ' + new Date(a.from).toLocaleDateString() : 'from the beginning'}${a.to ? ' to ' + new Date(a.to).toLocaleDateString() : ''}`).join(', ') || 'nobody'}`).join('') : '';
   const wrap = $('#vehicles'); wrap.innerHTML = '';
   const chargerNames = Object.keys(cfg.chargers || {});
   cfg.vehicles.forEach((v, i) => {
@@ -223,6 +258,7 @@ function renderVehicles() {
         ${f('Equivalent MPG helper (input_number)', 'mpg_entity', 'text', 'list="dl-numbers"')}
         <label class="f">Fuel grade (if no helper) <select data-k="fuel_grade">${['regular', 'midgrade', 'premium', 'diesel'].map((g) => `<option ${v.fuel_grade === g ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
         ${f('Equivalent MPG (if no helper)', 'mpg', 'number', 'step="0.1" min="1"')}
+        ${f('Engine efficiency for the energy comparison (blank = Settings default)', 'engine_efficiency', 'number', 'step="0.01" min="0" max="0.6"')}
       </div>
       <p class="hint" style="margin-top:10px">Charger history – which charger this vehicle used, by date. The live helper appends a new entry whenever it changes; edit the past here if a vehicle moved between chargers before this add-on existed.</p>
       <table class="asg"><thead><tr><th>From</th><th>Charger</th><th></th></tr></thead><tbody>${asg.map((a) => `<tr><td><input type="date" class="asg-from" value="${a.at ? new Date(a.at).toLocaleDateString('en-CA') : ''}" ${a.at ? '' : 'disabled placeholder="beginning"'}></td><td><select class="asg-ch">${['', ...chargerNames].map((n) => `<option value="${esc(n)}" ${n === (a.charger || '') ? 'selected' : ''}>${esc(n || 'none')}</option>`).join('')}</select></td><td><button class="lnk del asg-del">remove</button></td></tr>`).join('')}</tbody></table>
@@ -250,7 +286,7 @@ function readChargers() {
 }
 $('#charger-add').addEventListener('click', () => { $('#chargers tbody').insertAdjacentHTML('beforeend', `<tr><td><input type="text" class="m ch-name" placeholder="North"></td><td><input type="text" class="w ch-power" list="dl-power" placeholder="sensor.charger_power"></td><td><button class="lnk del ch-del">remove</button></td></tr>`); renderVehiclesBindOnly(); });
 function renderVehiclesBindOnly() { const tb = $('#chargers tbody'); tb.querySelectorAll('.ch-del').forEach((b) => { b.onclick = () => { b.closest('tr').remove(); readChargers(); }; }); tb.querySelectorAll('input').forEach((i) => { i.oninput = readChargers; }); }
-$('#vehicle-add').addEventListener('click', () => { cfg.vehicles.push({ id: '', name: '', enabled: true, charger_select: '', odometer: '', soc: '', capacity_kwh: 0, capacity_entity: '', charge_efficiency: 0.9, fuel_select: '', mpg_entity: '', fuel_grade: 'regular', mpg: 20 }); setDirty(true); renderVehicles(); });
+$('#vehicle-add').addEventListener('click', () => { cfg.vehicles.push({ id: '', name: '', enabled: true, charger_select: '', odometer: '', soc: '', capacity_kwh: 0, capacity_entity: '', charge_efficiency: 0.9, fuel_select: '', mpg_entity: '', fuel_grade: 'regular', mpg: 20, engine_efficiency: 0 }); setDirty(true); renderVehicles(); });
 $('#helpers').addEventListener('click', async () => { if (dirty) { toast('save the configuration first'); return; } try { const r = await post('helpers'); cfg.vehicles = r.vehicles; renderVehicles(); toast(r.created.length ? 'created: ' + r.created.join(', ') : 'nothing to create'); } catch (e) { toast(e.message); } });
 
 // ---------- fuel / settings ----------
@@ -260,6 +296,10 @@ function renderSettings() {
   $('#fuel-eia').innerHTML = Object.entries(EIA_AREAS).map(([k, n]) => `<option value="${k}" ${f.eia_area === k ? 'selected' : ''}>${esc(n)} (${k})</option>`).join('');
   $('#fuel-state').value = f.aaa_state || ''; $('#fuel-area').value = f.aaa_area || ''; $('#fuel-poll').value = f.poll_hours; $('#fuel-from').value = f.history_from || ''; $('#fuel-prefix').value = f.entity_prefix;
   $('#poll-minutes').value = cfg.poll_minutes; $('#recent-hours').value = cfg.recent_hours; $('#raw-days').value = cfg.raw_days; $('#backfill-from').value = cfg.backfill_from || ''; $('#rate-entity').value = cfg.rate_entity; $('#away-rate').value = cfg.away_rate;
+  const sc = cfg.session_check || {};
+  $('#sc-enabled').checked = sc.enabled !== false; $('#sc-min').value = sc.min_kwh; $('#sc-peak').value = sc.min_peak_kwh; $('#sc-frac').value = sc.match_fraction; $('#sc-lag').value = sc.lag_hours;
+  const em = cfg.energy_model || {};
+  $('#em-gas-kwh').value = em.gasoline_kwh_per_gal; $('#em-diesel-kwh').value = em.diesel_kwh_per_gal; $('#em-gas-eff').value = em.engine_efficiency_gasoline; $('#em-diesel-eff').value = em.engine_efficiency_diesel; $('#em-ev-eff').value = em.ev_drivetrain_efficiency; $('#em-regen').value = em.regen_share;
   $('#entity-prefix').value = cfg.entity_prefix; $('#windows').value = cfg.windows.join(', '); $('#mqtt-enabled').checked = !!cfg.mqtt.enabled; $('#stats-enabled').checked = !!cfg.statistics.enabled; $('#stats-prefix').value = cfg.statistics.prefix;
   $('#metrics').innerHTML = Object.entries(cfg.metric_defs).map(([k, [unit, , label]]) => `<label><input type="checkbox" class="met" value="${k}" ${cfg.metrics.includes(k) ? 'checked' : ''}> ${esc(label)} <span class="u" style="color:var(--muted);font-size:12.5px">${esc(unit)}</span></label>`).join('');
   document.querySelectorAll('#tab-fuel input, #tab-fuel select, #tab-settings input').forEach((i) => { i.oninput = readSettings; i.onchange = readSettings; });
@@ -267,6 +307,8 @@ function renderSettings() {
 function readSettings() {
   cfg.fuel = { ...cfg.fuel, enabled: $('#fuel-enabled').checked, eia_area: $('#fuel-eia').value, eia_area_name: EIA_AREAS[$('#fuel-eia').value] || $('#fuel-eia').value, aaa_state: $('#fuel-state').value.trim().toUpperCase(), aaa_area: $('#fuel-area').value.trim(), poll_hours: Number($('#fuel-poll').value), history_from: $('#fuel-from').value, entity_prefix: $('#fuel-prefix').value.trim() };
   cfg.poll_minutes = Number($('#poll-minutes').value); cfg.recent_hours = Number($('#recent-hours').value); cfg.raw_days = Number($('#raw-days').value); cfg.backfill_from = $('#backfill-from').value; cfg.rate_entity = $('#rate-entity').value.trim(); cfg.away_rate = Number($('#away-rate').value);
+  cfg.session_check = { enabled: $('#sc-enabled').checked, min_kwh: Number($('#sc-min').value), min_peak_kwh: Number($('#sc-peak').value), match_fraction: Number($('#sc-frac').value), lag_hours: Number($('#sc-lag').value) };
+  cfg.energy_model = { gasoline_kwh_per_gal: Number($('#em-gas-kwh').value), diesel_kwh_per_gal: Number($('#em-diesel-kwh').value), engine_efficiency_gasoline: Number($('#em-gas-eff').value), engine_efficiency_diesel: Number($('#em-diesel-eff').value), ev_drivetrain_efficiency: Number($('#em-ev-eff').value), regen_share: Number($('#em-regen').value) };
   cfg.entity_prefix = $('#entity-prefix').value.trim(); cfg.windows = $('#windows').value.split(/[\s,]+/).filter(Boolean); cfg.mqtt = { ...cfg.mqtt, enabled: $('#mqtt-enabled').checked }; cfg.statistics = { ...cfg.statistics, enabled: $('#stats-enabled').checked, prefix: $('#stats-prefix').value.trim() };
   cfg.metrics = [...document.querySelectorAll('.met:checked')].map((i) => i.value);
   setDirty(true);

@@ -13,7 +13,16 @@ and turns them into one row per hour per vehicle:
 | battery energy in | state-of-charge increases × pack capacity (anywhere) |
 | home energy | left-Riemann integral of the assigned charger's kW samples (a sample holds until the next one, so the long 0 kW gap before a charge adds nothing) |
 | home cost | home energy × the TOU rate of that hour, from the `plans` attribute of the rate sensor (`sensor.electricity_rate`) |
-| away energy | battery energy in − home energy × charging efficiency, floored at 0 — energy that must have come from somewhere else (DC fast charging). Only computed for hours where the home charger's data exists |
+| away energy | battery energy in − home energy × charging efficiency, floored at 0 — energy that must have come from somewhere else (DC fast charging). Only computed for hours where the home charger's data exists. The car reports its state of charge late (and an hourly mean lags by up to an hour), so an hour's unused home credit may still be claimed by the next hour before anything counts as away charging |
+
+**Charging session check.** Consecutive hours with energy from the assigned port form a session. When
+the vehicle's battery gain during the session (and up to *lag hours* after it, before the next
+session — a sleeping car reports late) is below *match fraction* × wall kWh × charging efficiency,
+the session was another car on that port: its kWh and cost move to `other_energy` / `other_cost` and
+leave the vehicle's home charging, cost, savings and statistics. Sessions under *min kWh* or whose
+largest hour is under *min peak kWh* (battery-conditioning trickle) are left alone, as are sessions
+without battery data. The Status tab lists each vehicle's latest sessions with wall kWh, battery kWh,
+ratio and verdict; the Vehicles tab shows who was assigned to each port over time.
 
 On first start, after "Rebuild history", or when a vehicle's charger history is edited, the older
 hours are **backfilled from HA's hourly long-term statistics** (odometer `change`, state-of-charge
@@ -36,6 +45,7 @@ Windows are summed from the hourly rows: `Nd` = the trailing N×24 hours includi
 | home_cost | USD | Σ home cost |
 | avg_rate | USD/kWh | home_cost / home_energy |
 | away_energy | kWh | Σ away energy (battery side) |
+| other_energy / other_cost | kWh / USD | Σ sessions on the assigned port booked as another vehicle's (not in home_energy / home_cost) |
 | ev_cost | USD | home_cost + away_energy / efficiency × *price away from home* |
 | battery_energy | kWh | Σ battery energy out (driving + idle) |
 | drive_energy | kWh | Σ battery energy out while moving |
@@ -48,13 +58,37 @@ Windows are summed from the hourly rows: `Nd` = the trailing N×24 hours includi
 | fuel_cost | USD | Σ gallons × that day's price of the vehicle's grade |
 | savings | USD | fuel_cost − ev_cost |
 | savings_pct | % | savings / fuel_cost |
+| energy_fuel_gallons | gal | Σ miles × gallons per mile from the measured driving energy (below) |
+| energy_fuel_cost | USD | Σ those gallons × that day's price of the vehicle's grade |
+| energy_savings | USD | energy_fuel_cost − ev_cost |
+| energy_mpg | mpg | miles / energy_fuel_gallons — the MPG an engine car would need to match the EV's measured energy use |
 
-Published through MQTT discovery as `sensor.<prefix>_<vehicle>_<metric>_<window>` (prefix `ev`),
+### Fuel equivalent from energy
+
+The `fuel_*` metrics assume an MPG. The `energy_*` metrics instead start from what the EV measurably
+used: the driving rate (kWh per mile from the state-of-charge drops while the odometer moved) is
+turned into the fuel an engine would burn for the same work,
+
+```
+wheel energy per mile = kWh/mi × EV drivetrain efficiency ÷ (1 − regen share)
+gallons per mile      = wheel energy per mile ÷ (kWh per gallon × engine efficiency)
+```
+
+with the parameters on the Settings tab: gasoline 33.7 kWh/gal and diesel 37.7 kWh/gal (the lower
+heating values the EPA uses for MPGe), engine + transmission efficiency 25 % (gasoline) / 30 %
+(diesel) over a mixed drive cycle, EV drivetrain 88 % (battery → wheels), regen share 10 % (part of
+the measured driving energy that was recovered braking energy, which an engine car would have to burn
+fuel for; 0 to ignore). A vehicle can override the engine efficiency on the Vehicles tab (a diesel
+grade helper selects the diesel values). The rate applied to a window's miles is the window's own raw
+hours with battery data (≥ 50 mi), else its hours with any battery data, else the vehicle-wide rate
+(from all raw hours), else the wall-side rate; statistics-backfilled hours under-count driving energy
+(see above), so their own values are never used. The coverage line on the Status tab names the basis. as `sensor.<prefix>_<vehicle>_<metric>_<window>` (prefix `ev`),
 one device per vehicle. Every sensor of a window carries **all** of that window's metrics plus
 `vehicle`, `charger`, `fuel_grade`, `mpg_equivalent`, `capacity_kwh`, `from`, `to`, `hours`,
-`raw_hours` as attributes, so a card can show the breakdown from any one of them. Two live
-sensors per vehicle: `sensor.<prefix>_<vehicle>_charger` (assigned charger; attributes
-`charging`, `charger_power_kw`) and `sensor.<prefix>_<vehicle>_fuel_price` (today's price of
+`raw_hours`, `energy_basis`, `energy_kwh_per_mile` and the energy parameters as attributes, so a
+card can show the breakdown from any one of them. Two live sensors per vehicle:
+`sensor.<prefix>_<vehicle>_charger` (assigned charger; attributes `charging`, `charger_power_kw`,
+`energy_mpg`, `drive_kwh_per_mile`) and `sensor.<prefix>_<vehicle>_fuel_price` (today's price of
 its grade).
 
 ### Helpers
@@ -73,8 +107,9 @@ a card or an automation; the fuel comparison and the fuel statistics re-price on
 With *Long-term statistics* on, hourly rows are imported as external statistics (source `evstats`)
 so the statistics graph card can show any period: `evstats:<vehicle>_miles` (mi), `_home_energy`
 (kWh), `_home_cost` (USD), `_battery_energy` (kWh), `_fuel_gallons` (gal), `_fuel_cost` (USD),
-`_savings` (USD). Only hours that changed are re-imported each run; a change of grade, MPG,
-efficiency or away price re-imports the whole series.
+`_savings` (USD), `_energy_fuel_gallons` (gal), `_energy_fuel_cost` (USD), `_energy_savings`
+(USD), `_other_energy` (kWh), `_other_cost` (USD). Only hours that changed are re-imported each run; a change of grade, MPG, efficiency, away
+price or of the vehicle-wide driving rate re-imports the whole series.
 
 ## Fuel prices
 
@@ -98,7 +133,8 @@ Sidebar **EV Stats** (ingress, admins). Tabs: Status (every vehicle's windows, c
 recompute / rebuild / refresh), Vehicles (chargers, vehicles, charger history, helper creation),
 Fuel prices, Settings, Log. Endpoints under the ingress URL: `GET /api/config`, `POST /api/config`,
 `GET /api/status`, `POST /api/poll`, `POST /api/rebuild {vehicle?}`, `POST /api/fuel/refresh`,
-`POST /api/helpers`, `POST /api/assignments {vehicle, list:[{from, charger}]}`, `GET /api/rows?vehicle=&hours=`.
+`POST /api/helpers`, `POST /api/assignments {vehicle, list:[{from, charger}]}`, `GET /api/rows?vehicle=&hours=`,
+`GET /api/sessions?vehicle=&limit=`.
 
 Data lives in the add-on's `/data`: `config.json`, `state.json`, `rollup.json` (the hourly rows),
 `fuel.json`.
