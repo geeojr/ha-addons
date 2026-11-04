@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EV Stats</title>
+<style>
+  :root { color-scheme: light dark;
+    --bg:#fafafa; --card:#fff; --text:#212121; --muted:#6b6b6b; --line:#e3e3e3; --accent:#03a9f4; --accent-ink:#fff; --warn:#c62828; --ok:#2e7d32; --chip:#eef3f8; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111; --card:#1c1c1c; --text:#e1e1e1; --muted:#9e9e9e; --line:#2e2e2e; --accent:#03a9f4; --chip:#262b31; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 Roboto, system-ui, sans-serif; }
+  header { display:flex; align-items:center; gap:14px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--card); position:sticky; top:0; z-index:5; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; font-weight:500; }
+  nav button { background:none; border:0; color:var(--muted); font:inherit; padding:8px 10px; cursor:pointer; border-bottom:2px solid transparent; }
+  nav button[aria-selected="true"] { color:var(--accent); border-color:var(--accent); }
+  .spacer { flex:1; }
+  .btn { background:var(--accent); color:var(--accent-ink); border:0; border-radius:6px; padding:8px 14px; font:inherit; cursor:pointer; }
+  .btn.sec { background:var(--chip); color:var(--text); }
+  .btn.sm { padding:4px 10px; font-size:13px; }
+  .btn:disabled { opacity:.5; cursor:default; }
+  main { padding:16px; max-width:1100px; margin:0 auto; }
+  section[hidden] { display:none; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:14px; }
+  h2 { font-size:16px; font-weight:500; margin:0 0 8px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  h2 .sub { color:var(--muted); font-size:13px; font-weight:400; }
+  p.hint { color:var(--muted); margin:4px 0 10px; font-size:13.5px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--muted); font-weight:500; font-size:12.5px; text-transform:uppercase; letter-spacing:.03em; }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  td.u { color:var(--muted); font-size:12.5px; }
+  input[type=checkbox] { width:18px; height:18px; accent-color:var(--accent); vertical-align:middle; }
+  input[type=text], input[type=number], input[type=date], select { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
+  input.w { width:100%; } input.s { width:90px; } input.m { width:160px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:6px 0; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:8px 14px; }
+  label.f { display:block; font-size:12.5px; color:var(--muted); }
+  label.f input, label.f select { display:block; width:100%; margin-top:2px; }
+  code { background:var(--chip); padding:1px 5px; border-radius:4px; font-size:13px; }
+  .log { font-size:13.5px; } .log .meta { color:var(--muted); margin-right:8px; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:10px; background:var(--chip); font-size:12.5px; margin-right:4px; }
+  .pill.on { background:var(--ok); color:#fff; } .pill.crit { background:var(--warn); color:#fff; }
+  .neg { color:var(--warn); } .pos { color:var(--ok); }
+  #toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#333; color:#fff; padding:10px 16px; border-radius:8px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  #toast.show { opacity:1; }
+  .dirty { color:var(--warn); font-size:13px; }
+  .lnk { background:none; border:0; color:var(--accent); cursor:pointer; font-size:13px; padding:0; }
+  .lnk.del { color:var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>EV Stats</h1>
+  <nav>
+    <button data-tab="status" aria-selected="true">Status</button>
+    <button data-tab="vehicles">Vehicles</button>
+    <button data-tab="fuel">Fuel prices</button>
+    <button data-tab="settings">Settings</button>
+    <button data-tab="log">Log</button>
+  </nav>
+  <span class="spacer"></span>
+  <span id="dirty" class="dirty" hidden>unsaved changes</span>
+  <button id="save" class="btn">Save</button>
+</header>
+<main>
+<section id="tab-status">
+  <div class="row">
+    <button id="poll" class="btn sec">Recompute now</button>
+    <button id="rebuild" class="btn sec">Rebuild history</button>
+    <span id="st-last" class="hint"></span>
+  </div>
+  <div id="st-vehicles"></div>
+  <div class="card" id="st-fuel-card">
+    <h2>Fuel prices <span class="sub" id="st-fuel-sub"></span> <span class="spacer"></span><button id="fuel-refresh" class="btn sec sm">Refresh now</button></h2>
+    <table id="st-fuel"><thead><tr><th>Grade</th><th class="n">Used today</th><th class="n">Yesterday</th><th class="n">Week ago</th><th class="n">Month ago</th><th class="n">Year ago</th><th class="n">State avg</th><th class="n">EIA weekly</th></tr></thead><tbody></tbody></table>
+    <p class="hint" id="st-fuel-hint"></p>
+  </div>
+</section>
+
+<section id="tab-vehicles" hidden>
+  <div class="card">
+    <h2>Chargers</h2>
+    <p class="hint">Name each home charger exactly as it appears in the vehicles' charger helper options (e.g. <code>North</code>, <code>South</code>) and give its power sensor (kW). Energy is integrated from that sensor's history.</p>
+    <table id="chargers"><thead><tr><th>Name</th><th>Power sensor</th><th></th></tr></thead><tbody></tbody></table>
+    <div class="row"><button id="charger-add" class="btn sec sm">Add charger</button></div>
+  </div>
+  <div id="vehicles"></div>
+  <div class="row">
+    <button id="vehicle-add" class="btn sec">Add vehicle</button>
+    <button id="helpers" class="btn sec">Create missing fuel helpers in HA</button>
+  </div>
+  <p class="hint">Each vehicle needs an <code>input_select</code> helper naming its charger, an odometer sensor and (for battery-side numbers) a state-of-charge sensor plus the pack capacity. The fuel helpers (<code>input_select.&lt;name&gt;_fuel_equivalent</code>, <code>input_number.&lt;name&gt;_equivalent_mpg</code>) set which gasoline grade and MPG the vehicle is compared against; they override the values typed here. Changing them re-prices the fuel statistics automatically.</p>
+</section>
+
+<section id="tab-fuel" hidden>
+  <div class="card">
+    <h2>Sources</h2>
+    <div class="grid">
+      <label class="f">Enabled <input type="checkbox" id="fuel-enabled" style="display:inline-block;width:auto"></label>
+      <label class="f">EIA region (weekly history, no key) <select id="fuel-eia"></select></label>
+      <label class="f">AAA state (daily averages) <input type="text" id="fuel-state" class="w" placeholder="MO"></label>
+      <label class="f">AAA metro area (starts with; blank = state average) <input type="text" id="fuel-area" class="w" list="aaa-areas" placeholder="Kansas City"></label>
+      <datalist id="aaa-areas"></datalist>
+      <label class="f">AAA poll interval (hours) <input type="number" id="fuel-poll" min="1" step="1"></label>
+      <label class="f">History from (EIA, statistics) <input type="date" id="fuel-from"></label>
+      <label class="f">Sensor prefix <input type="text" id="fuel-prefix" class="w"></label>
+    </div>
+    <p class="hint">Sensors <code>sensor.&lt;prefix&gt;_regular</code>, <code>_midgrade</code>, <code>_premium</code>, <code>_diesel</code> (USD/gal) with yesterday / week / month / year-ago, state and EIA weekly attributes. The per-day price used for the gasoline comparison is the AAA snapshot of that day when the add-on recorded one (up to 7 days old), otherwise the EIA week containing the day. Daily rows are also imported as long-term statistics <code>evstats:fuel_price_&lt;grade&gt;</code>.</p>
+  </div>
+</section>
+
+<section id="tab-settings" hidden>
+  <div class="card">
+    <h2>Computation</h2>
+    <div class="grid">
+      <label class="f">Recompute every (minutes) <input type="number" id="poll-minutes" min="1"></label>
+      <label class="f">Hours re-derived from raw history each run <input type="number" id="recent-hours" min="2" max="48"></label>
+      <label class="f">Days of raw history on rebuild <input type="number" id="raw-days" min="1" max="30"></label>
+      <label class="f">Backfill from (hourly statistics) <input type="date" id="backfill-from"></label>
+      <label class="f">Rate sensor (attribute <code>plans</code>) <input type="text" id="rate-entity" class="w"></label>
+      <label class="f">Assumed price away from home (USD/kWh) <input type="number" id="away-rate" min="0" step="0.01"></label>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Sensors</h2>
+    <div class="grid">
+      <label class="f">Entity prefix <input type="text" id="entity-prefix" class="w"></label>
+      <label class="f">Windows (comma separated: <code>1d 7d 30d 365d today week mtd ytd</code>) <input type="text" id="windows" class="w"></label>
+      <label class="f">MQTT discovery <input type="checkbox" id="mqtt-enabled" style="display:inline-block;width:auto"></label>
+      <label class="f">Long-term statistics <input type="checkbox" id="stats-enabled" style="display:inline-block;width:auto"> prefix <input type="text" id="stats-prefix" class="s"></label>
+    </div>
+    <p class="hint">Metrics published per vehicle and window as <code>sensor.&lt;prefix&gt;_&lt;vehicle&gt;_&lt;metric&gt;_&lt;window&gt;</code>. Every sensor of a window carries all of that window's numbers as attributes.</p>
+    <div id="metrics" class="grid"></div>
+  </div>
+</section>
+
+<section id="tab-log" hidden>
+  <div class="card"><h2>Log</h2><div id="log" class="log"></div></div>
+</section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const api = async (p, opts) => { const r = await fetch('api/' + p, opts); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; };
+const post = (p, body) => api(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+let cfg = null, ha = null, status = null, dirty = false;
+const toast = (m) => { const t = $('#toast'); t.textContent = m; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); };
+const setDirty = (d) => { dirty = d; $('#dirty').hidden = !d; };
+const EIA_AREAS = { NUS: 'U.S. average', R10: 'East Coast', R1X: 'New England', R1Y: 'Central Atlantic', R1Z: 'Lower Atlantic', R20: 'Midwest', R30: 'Gulf Coast', R40: 'Rocky Mountain', R50: 'West Coast', R5XCA: 'West Coast less California', SCA: 'California', SCO: 'Colorado', SFL: 'Florida', SMA: 'Massachusetts', SMN: 'Minnesota', SNY: 'New York', SOH: 'Ohio', STX: 'Texas', SWA: 'Washington', Y12CH: 'Chicago', Y12CL: 'Cleveland', Y08DE: 'Denver', Y44HO: 'Houston', Y05LA: 'Los Angeles', Y1MIA: 'Miami', Y35NY: 'New York City', Y05SF: 'San Francisco', Y48SE: 'Seattle', Y1BOS: 'Boston' };
+
+document.querySelectorAll('nav button').forEach((b) => b.addEventListener('click', () => {
+  document.querySelectorAll('nav button').forEach((x) => x.setAttribute('aria-selected', x === b));
+  document.querySelectorAll('main > section').forEach((s) => { s.hidden = s.id !== 'tab-' + b.dataset.tab; });
+  if (b.dataset.tab === 'status' || b.dataset.tab === 'log') loadStatus();
+}));
+
+// ---------- status ----------
+const fmt = (v, p) => v == null ? '–' : Number(v).toLocaleString(undefined, { minimumFractionDigits: p, maximumFractionDigits: p });
+const money = (v) => v == null ? '–' : (v < 0 ? '-' : '') + '$' + fmt(Math.abs(v), 2);
+const ago = (ms) => { const s = Math.round((Date.now() - ms) / 1000); return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${(s / 3600).toFixed(1)} h ago`; };
+async function loadStatus() {
+  try { status = await api('status'); } catch (e) { toast('status: ' + e.message); return; }
+  const last = status.last || {};
+  $('#st-last').textContent = last.at ? `last run ${ago(last.at)} (${last.ms} ms)` + (last.error ? ` – error: ${last.error}` : '') : 'not run yet';
+  const defs = cfg ? cfg.metric_defs : {};
+  const order = ['miles', 'home_energy', 'home_cost', 'avg_rate', 'away_energy', 'ev_cost', 'battery_energy', 'drive_energy', 'charged_energy', 'efficiency', 'consumption', 'wall_consumption', 'cost_per_mile', 'fuel_gallons', 'fuel_cost', 'savings', 'savings_pct'];
+  let html = '';
+  for (const [vid, v] of Object.entries(last.vehicles || {})) {
+    const wins = Object.keys(v.metrics || {});
+    const s = v.settings || {}, live = v.live || {};
+    const asg = (status.assignments || {})[vid] || [];
+    html += `<div class="card"><h2>${esc(v.name)} <span class="sub">charger <b>${esc(live.charger || 'none')}</b>${live.charging ? ' · charging ' + fmt(live.charger_power_kw, 1) + ' kW' : ''} · vs ${esc(s.grade)} at ${fmt(s.mpg, 1)} mpg (${live.fuel_price != null ? '$' + fmt(live.fuel_price, 3) + '/gal ' + esc(live.fuel_price_source || '') : 'no price'}) · ${fmt(s.capacity, 1)} kWh pack</span></h2>`;
+    html += `<table><thead><tr><th>Metric</th>${wins.map((w) => `<th class="n">${esc(w)}</th>`).join('')}<th></th></tr></thead><tbody>`;
+    for (const m of order) {
+      if (!defs[m]) continue; const [unit, , label, prec] = defs[m];
+      html += `<tr><td>${esc(label)}</td>${wins.map((w) => { const val = v.metrics[w][m]; const cls = m === 'savings' || m === 'savings_pct' ? (val < 0 ? ' neg' : val > 0 ? ' pos' : '') : ''; return `<td class="n${cls}">${unit === 'USD' ? money(val) : fmt(val, prec)}</td>`; }).join('')}<td class="u">${esc(unit)}</td></tr>`;
+    }
+    html += `</tbody></table>`;
+    const cov = wins.map((w) => { const m = v.metrics[w]; return `${w}: ${m.raw_hours}/${m.hours} h raw` + (m.miles_with_battery_data < m.miles - 0.5 ? `, battery data for ${fmt(m.miles_with_battery_data, 0)} of ${fmt(m.miles, 0)} mi` : '') + (m.miles_with_charger_data < m.miles - 0.5 ? `, charger data for ${fmt(m.miles_with_charger_data, 0)} mi` : ''); }).join(' · ');
+    html += `<p class="hint">Coverage – ${esc(cov)}. Charger history: ${asg.map((a) => `${a.charger || 'none'} from ${a.at ? new Date(a.at).toLocaleDateString() : 'the beginning'}`).join(', ') || 'none'} (edit on the Vehicles tab).</p></div>`;
+  }
+  $('#st-vehicles').innerHTML = html || '<div class="card"><p class="hint">No vehicles configured yet – add them on the Vehicles tab.</p></div>';
+  const f = last.fuel || {}; const tb = $('#st-fuel tbody'); tb.innerHTML = '';
+  for (const g of ['regular', 'midgrade', 'premium', 'diesel']) {
+    const p = f[g]; if (!p) continue;
+    tb.insertAdjacentHTML('beforeend', `<tr><td>${esc(p.grade)}</td><td class="n"><b>${p.price != null ? '$' + fmt(p.price, 3) : '–'}</b> <span class="pill">${esc(p.source || '')}</span></td><td class="n">${p.yesterday != null ? '$' + fmt(p.yesterday, 3) : '–'}</td><td class="n">${p.week_ago != null ? '$' + fmt(p.week_ago, 3) : '–'}</td><td class="n">${p.month_ago != null ? '$' + fmt(p.month_ago, 3) : '–'}</td><td class="n">${p.year_ago != null ? '$' + fmt(p.year_ago, 3) : '–'}</td><td class="n">${p.state_avg != null ? '$' + fmt(p.state_avg, 3) : '–'}</td><td class="n">${p.eia_weekly != null ? '$' + fmt(p.eia_weekly, 3) : '–'}</td></tr>`);
+  }
+  $('#st-fuel-sub').textContent = f.area ? `${f.area} (AAA, as of ${f.as_of || '?'}) · EIA ${f.eia_area || ''} week of ${(f.regular || {}).eia_week_of || '?'}` : '';
+  const fs = status.fuel || {};
+  $('#st-fuel-hint').textContent = `${fs.weeks || 0} EIA weeks, ${fs.days || 0} AAA daily snapshots` + (fs.eia_error ? ` · EIA error: ${fs.eia_error}` : '') + (fs.aaa_error ? ` · AAA error: ${fs.aaa_error}` : '') + (f.national_regular ? ` · national regular $${fmt(f.national_regular, 3)}` : '');
+  if (fs.areas) $('#aaa-areas').innerHTML = fs.areas.map((a) => `<option value="${esc(a)}">`).join('');
+  $('#log').innerHTML = (status.log || []).map((l) => `<div><span class="meta">${new Date(l.at).toLocaleString()}</span>${esc(l.msg)}</div>`).join('') || '<p class="hint">empty</p>';
+}
+$('#poll').addEventListener('click', async () => { $('#poll').disabled = true; try { await post('poll'); await loadStatus(); toast('recomputed'); } catch (e) { toast(e.message); } $('#poll').disabled = false; });
+$('#rebuild').addEventListener('click', async () => { if (!confirm('Rebuild every vehicle\'s hourly history from Home Assistant statistics and re-import the long-term statistics?')) return; $('#rebuild').disabled = true; try { await post('rebuild', {}); await loadStatus(); toast('rebuilt'); } catch (e) { toast(e.message); } $('#rebuild').disabled = false; });
+$('#fuel-refresh').addEventListener('click', async () => { $('#fuel-refresh').disabled = true; try { await post('fuel/refresh'); await loadStatus(); toast('fuel prices refreshed'); } catch (e) { toast(e.message); } $('#fuel-refresh').disabled = false; });
+
+// ---------- vehicles ----------
+function dl(id, list) { return `<datalist id="${id}">${(list || []).map((e) => `<option value="${esc(e.entity)}">${esc(e.name)}</option>`).join('')}</datalist>`; }
+function renderVehicles() {
+  const tb = $('#chargers tbody'); tb.innerHTML = '';
+  for (const [name, c] of Object.entries(cfg.chargers || {})) tb.insertAdjacentHTML('beforeend', `<tr><td><input type="text" class="m ch-name" value="${esc(name)}"></td><td><input type="text" class="w ch-power" list="dl-power" value="${esc(c.power)}"></td><td><button class="lnk del ch-del">remove</button></td></tr>`);
+  tb.querySelectorAll('.ch-del').forEach((b) => b.addEventListener('click', () => { b.closest('tr').remove(); readChargers(); }));
+  tb.querySelectorAll('input').forEach((i) => i.addEventListener('input', readChargers));
+  const wrap = $('#vehicles'); wrap.innerHTML = '';
+  const chargerNames = Object.keys(cfg.chargers || {});
+  cfg.vehicles.forEach((v, i) => {
+    const asg = ((status && status.assignments) || {})[v.id] || [];
+    const f = (label, key, type = 'text', extra = '') => `<label class="f">${label} <input type="${type}" data-k="${key}" value="${esc(v[key])}" ${extra}></label>`;
+    wrap.insertAdjacentHTML('beforeend', `<div class="card" data-i="${i}"><h2>${esc(v.name || 'vehicle')} <span class="sub"><code>sensor.${esc(cfg.entity_prefix)}_${esc(v.id || '?')}_*</code></span><span class="spacer"></span><label><input type="checkbox" data-k="enabled" ${v.enabled ? 'checked' : ''}> enabled</label> <button class="lnk del v-del">remove</button></h2>
+      <div class="grid">
+        ${f('Name', 'name')} ${f('Id (entity ids)', 'id')}
+        ${f('Charger helper (input_select)', 'charger_select', 'text', 'list="dl-selects"')}
+        ${f('Odometer sensor (mi)', 'odometer', 'text', 'list="dl-distance"')}
+        ${f('State of charge sensor (%)', 'soc', 'text', 'list="dl-battery"')}
+        ${f('Pack capacity sensor (kWh, optional)', 'capacity_entity', 'text', 'list="dl-storage"')}
+        ${f('Pack capacity (kWh) if no sensor', 'capacity_kwh', 'number', 'step="0.01" min="0"')}
+        ${f('Charging efficiency (wall → battery)', 'charge_efficiency', 'number', 'step="0.01" min="0.5" max="1"')}
+        ${f('Fuel grade helper (input_select)', 'fuel_select', 'text', 'list="dl-selects"')}
+        ${f('Equivalent MPG helper (input_number)', 'mpg_entity', 'text', 'list="dl-numbers"')}
+        <label class="f">Fuel grade (if no helper) <select data-k="fuel_grade">${['regular', 'midgrade', 'premium', 'diesel'].map((g) => `<option ${v.fuel_grade === g ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
+        ${f('Equivalent MPG (if no helper)', 'mpg', 'number', 'step="0.1" min="1"')}
+      </div>
+      <p class="hint" style="margin-top:10px">Charger history – which charger this vehicle used, by date. The live helper appends a new entry whenever it changes; edit the past here if a vehicle moved between chargers before this add-on existed.</p>
+      <table class="asg"><thead><tr><th>From</th><th>Charger</th><th></th></tr></thead><tbody>${asg.map((a) => `<tr><td><input type="date" class="asg-from" value="${a.at ? new Date(a.at).toLocaleDateString('en-CA') : ''}" ${a.at ? '' : 'disabled placeholder="beginning"'}></td><td><select class="asg-ch">${['', ...chargerNames].map((n) => `<option value="${esc(n)}" ${n === (a.charger || '') ? 'selected' : ''}>${esc(n || 'none')}</option>`).join('')}</select></td><td><button class="lnk del asg-del">remove</button></td></tr>`).join('')}</tbody></table>
+      <div class="row"><button class="btn sec sm asg-add">Add period</button><button class="btn sec sm asg-apply">Apply charger history &amp; rebuild ${esc(v.name)}</button></div>
+    </div>`);
+  });
+  wrap.querySelectorAll('.card').forEach((card) => {
+    const i = +card.dataset.i;
+    card.querySelectorAll('[data-k]').forEach((inp) => inp.addEventListener('input', () => { const k = inp.dataset.k; cfg.vehicles[i][k] = inp.type === 'checkbox' ? inp.checked : inp.type === 'number' ? Number(inp.value) : inp.value; setDirty(true); }));
+    $('.v-del', card).addEventListener('click', () => { if (confirm('Remove this vehicle from the add-on? (Its sensors stay in HA until MQTT discovery is cleared.)')) { cfg.vehicles.splice(i, 1); setDirty(true); renderVehicles(); } });
+    $('.asg-add', card).addEventListener('click', () => { $('.asg tbody', card).insertAdjacentHTML('beforeend', `<tr><td><input type="date" class="asg-from"></td><td><select class="asg-ch">${['', ...chargerNames].map((n) => `<option value="${esc(n)}">${esc(n || 'none')}</option>`).join('')}</select></td><td><button class="lnk del asg-del">remove</button></td></tr>`); bindAsgDel(card); });
+    bindAsgDel(card);
+    $('.asg-apply', card).addEventListener('click', async (ev) => {
+      const v = cfg.vehicles[i]; if (dirty) { toast('save the configuration first'); return; }
+      const list = [...card.querySelectorAll('.asg tbody tr')].map((tr) => ({ from: $('.asg-from', tr).value, charger: $('.asg-ch', tr).value }));
+      ev.target.disabled = true; try { await post('assignments', { vehicle: v.id, list }); toast(`${v.name}: history rebuilt`); await loadStatus(); renderVehicles(); } catch (e) { toast(e.message); } ev.target.disabled = false;
+    });
+  });
+}
+function bindAsgDel(card) { card.querySelectorAll('.asg-del').forEach((b) => { b.onclick = () => b.closest('tr').remove(); }); }
+function readChargers() {
+  const out = {};
+  $('#chargers tbody').querySelectorAll('tr').forEach((tr) => { const n = $('.ch-name', tr).value.trim(), p = $('.ch-power', tr).value.trim(); if (n) out[n] = { power: p }; });
+  cfg.chargers = out; setDirty(true);
+}
+$('#charger-add').addEventListener('click', () => { $('#chargers tbody').insertAdjacentHTML('beforeend', `<tr><td><input type="text" class="m ch-name" placeholder="North"></td><td><input type="text" class="w ch-power" list="dl-power" placeholder="sensor.charger_power"></td><td><button class="lnk del ch-del">remove</button></td></tr>`); renderVehiclesBindOnly(); });
+function renderVehiclesBindOnly() { const tb = $('#chargers tbody'); tb.querySelectorAll('.ch-del').forEach((b) => { b.onclick = () => { b.closest('tr').remove(); readChargers(); }; }); tb.querySelectorAll('input').forEach((i) => { i.oninput = readChargers; }); }
+$('#vehicle-add').addEventListener('click', () => { cfg.vehicles.push({ id: '', name: '', enabled: true, charger_select: '', odometer: '', soc: '', capacity_kwh: 0, capacity_entity: '', charge_efficiency: 0.9, fuel_select: '', mpg_entity: '', fuel_grade: 'regular', mpg: 20 }); setDirty(true); renderVehicles(); });
+$('#helpers').addEventListener('click', async () => { if (dirty) { toast('save the configuration first'); return; } try { const r = await post('helpers'); cfg.vehicles = r.vehicles; renderVehicles(); toast(r.created.length ? 'created: ' + r.created.join(', ') : 'nothing to create'); } catch (e) { toast(e.message); } });
+
+// ---------- fuel / settings ----------
+function renderSettings() {
+  const f = cfg.fuel;
+  $('#fuel-enabled').checked = !!f.enabled;
+  $('#fuel-eia').innerHTML = Object.entries(EIA_AREAS).map(([k, n]) => `<option value="${k}" ${f.eia_area === k ? 'selected' : ''}>${esc(n)} (${k})</option>`).join('');
+  $('#fuel-state').value = f.aaa_state || ''; $('#fuel-area').value = f.aaa_area || ''; $('#fuel-poll').value = f.poll_hours; $('#fuel-from').value = f.history_from || ''; $('#fuel-prefix').value = f.entity_prefix;
+  $('#poll-minutes').value = cfg.poll_minutes; $('#recent-hours').value = cfg.recent_hours; $('#raw-days').value = cfg.raw_days; $('#backfill-from').value = cfg.backfill_from || ''; $('#rate-entity').value = cfg.rate_entity; $('#away-rate').value = cfg.away_rate;
+  $('#entity-prefix').value = cfg.entity_prefix; $('#windows').value = cfg.windows.join(', '); $('#mqtt-enabled').checked = !!cfg.mqtt.enabled; $('#stats-enabled').checked = !!cfg.statistics.enabled; $('#stats-prefix').value = cfg.statistics.prefix;
+  $('#metrics').innerHTML = Object.entries(cfg.metric_defs).map(([k, [unit, , label]]) => `<label><input type="checkbox" class="met" value="${k}" ${cfg.metrics.includes(k) ? 'checked' : ''}> ${esc(label)} <span class="u" style="color:var(--muted);font-size:12.5px">${esc(unit)}</span></label>`).join('');
+  document.querySelectorAll('#tab-fuel input, #tab-fuel select, #tab-settings input').forEach((i) => { i.oninput = readSettings; i.onchange = readSettings; });
+}
+function readSettings() {
+  cfg.fuel = { ...cfg.fuel, enabled: $('#fuel-enabled').checked, eia_area: $('#fuel-eia').value, eia_area_name: EIA_AREAS[$('#fuel-eia').value] || $('#fuel-eia').value, aaa_state: $('#fuel-state').value.trim().toUpperCase(), aaa_area: $('#fuel-area').value.trim(), poll_hours: Number($('#fuel-poll').value), history_from: $('#fuel-from').value, entity_prefix: $('#fuel-prefix').value.trim() };
+  cfg.poll_minutes = Number($('#poll-minutes').value); cfg.recent_hours = Number($('#recent-hours').value); cfg.raw_days = Number($('#raw-days').value); cfg.backfill_from = $('#backfill-from').value; cfg.rate_entity = $('#rate-entity').value.trim(); cfg.away_rate = Number($('#away-rate').value);
+  cfg.entity_prefix = $('#entity-prefix').value.trim(); cfg.windows = $('#windows').value.split(/[\s,]+/).filter(Boolean); cfg.mqtt = { ...cfg.mqtt, enabled: $('#mqtt-enabled').checked }; cfg.statistics = { ...cfg.statistics, enabled: $('#stats-enabled').checked, prefix: $('#stats-prefix').value.trim() };
+  cfg.metrics = [...document.querySelectorAll('.met:checked')].map((i) => i.value);
+  setDirty(true);
+}
+$('#save').addEventListener('click', async () => {
+  $('#save').disabled = true;
+  try { const r = await post('config', cfg); cfg = { ...cfg, ...r.config }; setDirty(false); toast('saved'); renderVehicles(); renderSettings(); await post('poll'); await loadStatus(); } catch (e) { toast('save failed: ' + e.message); }
+  $('#save').disabled = false;
+});
+
+(async () => {
+  cfg = await api('config');
+  try { ha = await api('ha'); } catch (e) { ha = {}; toast('HA entity list: ' + e.message); }
+  document.body.insertAdjacentHTML('beforeend', dl('dl-selects', ha.selects) + dl('dl-numbers', ha.numbers) + dl('dl-distance', ha.distance) + dl('dl-battery', ha.battery) + dl('dl-power', ha.power) + dl('dl-storage', ha.energy_storage));
+  await loadStatus();
+  renderVehicles(); renderSettings();
+  setInterval(() => { if (!$('#tab-status').hidden) loadStatus(); }, 60000);
+})();
+</script>
+</body>
+</html>

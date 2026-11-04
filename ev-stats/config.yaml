@@ -1,0 +1,18 @@
+name: EV Stats
+version: "1.0.0"
+slug: ev_stats
+description: Per-vehicle EV charging cost, efficiency and gasoline-equivalent sensors (rolling windows + long-term statistics), with EIA/AAA fuel prices
+url: https://github.com/geeojr/ha-addons/tree/main/ev-stats
+arch:
+  - amd64
+  - aarch64
+startup: services
+init: false
+homeassistant_api: true
+ingress: true
+ingress_port: 7120
+panel_icon: mdi:car-electric
+panel_title: EV Stats
+panel_admin: true
+options: {}
+schema: {}
