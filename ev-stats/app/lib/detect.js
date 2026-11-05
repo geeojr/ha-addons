@@ -26,9 +26,10 @@ const binaryOn = (s) => ['on', 'true', 'connected', 'plugged', 'plugged_in', 'lo
  * Match each charger plug-in (on-transition) to the vehicle whose plug sensor turned on closest in time,
  * within [-beforeMs, +afterMs]; every vehicle transition is used at most once, closest pairs first.
  *   chargers: { name: [transitions] }   vehicles: { id: [transitions] }
- * -> [{ charger, at, vehicle | null, delta_ms | null, candidates }] sorted by time
+ * -> [{ charger, at, vehicle | null, delta_ms | null, candidates, alternatives: [{vehicle, delta_ms}], ambiguous }] sorted by time;
+ *    candidates/alternatives hold only vehicle events no other charger event claimed
  */
-function matchPlugins(chargers, vehicles, beforeMs = 3 * MIN, afterMs = 15 * MIN) {
+function matchPlugins(chargers, vehicles, beforeMs = 3 * MIN, afterMs = 15 * MIN, closeMs = 2 * MIN) {
   const events = [];
   for (const [name, list] of Object.entries(chargers)) for (const tr of list) if (tr.on) events.push({ charger: name, at: tr.t, vehicle: null, delta_ms: null, candidates: [] });
   const pairs = [];
@@ -43,7 +44,14 @@ function matchPlugins(chargers, vehicles, beforeMs = 3 * MIN, afterMs = 15 * MIN
     if (p.e.vehicle || usedV.has(key)) continue;
     p.e.vehicle = p.vid; p.e.delta_ms = p.d; usedV.add(key);
   }
-  for (const e of events) e.candidates = [...new Set(e.candidates)];
+  // Only vehicle events nobody else claimed count as alternatives; the match is ambiguous when one of
+  // them was nearly as close (within `closeMs` of the winner's own delay).
+  for (const e of events) {
+    const alts = pairs.filter((p) => p.e === e && p.vid !== e.vehicle && !usedV.has(p.vid + '@' + p.t));
+    e.alternatives = alts.map((p) => ({ vehicle: p.vid, delta_ms: p.d }));
+    e.candidates = [...new Set([...(e.vehicle ? [e.vehicle] : []), ...alts.map((p) => p.vid)])];
+    e.ambiguous = !!e.vehicle && alts.some((p) => Math.abs(p.d) - Math.abs(e.delta_ms) < closeMs);
+  }
   return events.sort((a, b) => a.at - b.at);
 }
 

@@ -246,10 +246,10 @@ async function detect(w, states, nowMs) {
     const key = `${name}@${ev.at}`;
     if (ev.vehicle) {
       const v = config.vehicles.find((x) => x.id === ev.vehicle);
-      Object.assign(port, { vehicle: v.id, vehicle_name: v.name, confidence: ev.candidates.length > 1 ? 'medium' : 'high', since: new Date(ev.at).toISOString(), plug_delay_s: Math.round(ev.delta_ms / 1000) });
+      Object.assign(port, { vehicle: v.id, vehicle_name: v.name, confidence: ev.ambiguous ? 'medium' : 'high', since: new Date(ev.at).toISOString(), plug_delay_s: Math.round(ev.delta_ms / 1000) });
       if (state.detect_done[key] === v.id) continue;
       state.detect_done[key] = v.id;
-      log(`${name}: ${v.name} plugged in at ${new Date(ev.at).toISOString()} (its plug sensor followed ${Math.round(ev.delta_ms / 1000)} s later${ev.candidates.length > 1 ? '; other candidate ' + ev.candidates.filter((x) => x !== v.id).join(', ') : ''})`);
+      log(`${name}: ${v.name} plugged in at ${new Date(ev.at).toISOString()} (its plug sensor followed ${Math.round(ev.delta_ms / 1000)} s later${ev.alternatives.length ? '; unclaimed alternative ' + ev.alternatives.map((a) => `${a.vehicle} ${Math.round(a.delta_ms / 1000)} s`).join(', ') + (ev.ambiguous ? ' - ambiguous' : '') : ''})`);
       if (!dc.auto_assign || chargerOf(v, states) === name) continue;
       const sel = states.find((s) => s.entity_id === v.charger_select); const opt = sel && (sel.attributes.options || []).find((o) => String(o).toLowerCase() === name.toLowerCase());
       if (!opt) { log(`${v.name}: ${v.charger_select || 'no charger helper'} has no option "${name}"; not switched`); continue; }

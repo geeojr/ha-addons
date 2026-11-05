@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.2.1
+- Port detection confidence: a vehicle plug-in that another port already claimed no longer counts as an alternative, and the match is `medium` only when an unclaimed alternative was nearly as close (within 2 minutes). A 2-second R1S match was being marked medium because the Audi's refresh-nudged plug report 11 minutes later fell inside the window.
+
 ## 1.2.0
 - Port detection: each charger's status sensor plug-in is matched to the vehicle whose plug sensor turned on closest in time; the vehicle's charger helper and charger history follow the detected port (`detection.auto_assign`), `sensor.<prefix>_charger_<port>_vehicle` shows who is on each port (or `unknown` for a guest), and an unclaimed plug-in presses the refresh button of unplugged vehicles that have one (Audi). Ports table on the Status tab.
 - Charge estimate per vehicle: `sensor.<prefix>_<vehicle>_charge_time_to_target` (min), `_charge_needed` (kWh), `_charge_latest_start` (timestamp, to be done by the end of the next cheapest rate window), `binary_sensor.<prefix>_<vehicle>_charge_start_early` (the window alone is too short) and `_plugged`; the port's kW is measured from the vehicle's own full charging hours (live while charging).

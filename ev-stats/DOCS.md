@@ -106,7 +106,7 @@ looks at the last *lookback hours* of both: a charger's plug-in is matched to th
 sensor turned on closest in time, within *before* / *after* minutes, each vehicle event used once.
 The result is kept per port (`sensor.<prefix>_charger_<port>_vehicle`: the vehicle's name, `unknown`
 while something unclaimed is plugged in, `none` when the port is free; attributes `status`, `since`,
-`confidence` — `medium` when another vehicle also plugged in within the window) and, with *switch the
+`confidence` — `medium` when another vehicle's plug-in that no other port claimed was nearly as close, `plug_delay_s`) and, with *switch the
 charger helpers* on, the vehicle's `input_select` is set to that port and its charger history gets an
 entry at the plug-in time, so the hourly rows follow the port from then on. A plug-in nobody claimed
 after *refresh after minutes* presses the **refresh button** of every unplugged vehicle that has one

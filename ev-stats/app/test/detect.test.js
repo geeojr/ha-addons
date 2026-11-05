@@ -19,7 +19,13 @@ test('matchPlugins(): closest vehicle plug within the window wins, each vehicle 
   const vehicles = { r1s: D.transitions([row(0, 'off'), row(10, 'on')], D.binaryOn), q8: D.transitions([row(0, 'off'), row(14, 'on')], D.binaryOn) };
   const m = D.matchPlugins(chargers, vehicles);
   assert.deepEqual(m.map((e) => [e.charger, (e.at - T0) / 60000, e.vehicle, e.delta_ms]), [['North', 10, 'r1s', 0], ['South', 12, 'q8', 120000], ['North', 400, null, null]]);
-  assert.deepEqual(m[0].candidates, ['r1s', 'q8']); // both were within the window; r1s was closer and q8 went to South
+  assert.deepEqual(m[0].candidates, ['r1s']); assert.equal(m[0].ambiguous, false); // q8 was in the window but South claimed it
+  assert.deepEqual(m[1].candidates, ['q8']); assert.equal(m[1].ambiguous, false);
+  // one charger event, two unclaimed vehicle events: ambiguous only when the loser was nearly as close
+  const two = D.matchPlugins({ North: chargers.South }, { r1s: D.transitions([row(0, 'off'), row(13, 'on')], D.binaryOn), q8: D.transitions([row(0, 'off'), row(14, 'on')], D.binaryOn) });
+  assert.deepEqual([two[0].vehicle, two[0].ambiguous, two[0].alternatives], ['r1s', true, [{ vehicle: 'q8', delta_ms: 120000 }]]);
+  const far = D.matchPlugins({ North: chargers.South }, { r1s: D.transitions([row(0, 'off'), row(12, 'on')], D.binaryOn), q8: D.transitions([row(0, 'off'), row(24, 'on')], D.binaryOn) });
+  assert.deepEqual([far[0].vehicle, far[0].ambiguous, far[0].candidates], ['r1s', false, ['r1s', 'q8']]);
   // a vehicle that reported 20 minutes late is outside the default window
   const late = D.matchPlugins({ South: chargers.South }, { q8: D.transitions([row(0, 'off'), row(40, 'on')], D.binaryOn) });
   assert.equal(late[0].vehicle, null);
