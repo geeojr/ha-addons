@@ -81,7 +81,7 @@
 <section id="tab-vehicles" hidden>
   <div class="card">
     <h2>Chargers</h2>
-    <p class="hint">Name each home charger exactly as it appears in the vehicles' charger helper options (e.g. <code>North</code>, <code>South</code>) and give its power sensor (kW). Energy is integrated from that sensor's history.</p>
+    <p class="hint">Name each home charger (e.g. <code>North</code>, <code>South</code>) and give its power sensor (kW) and status sensor. Energy is integrated from that sensor's history.</p>
     <table id="chargers"><thead><tr><th>Name</th><th>Power sensor</th><th>Status sensor (plug detection)</th><th>Max kW</th><th></th></tr></thead><tbody></tbody></table>
     <div class="row"><button id="charger-add" class="btn sec sm">Add charger</button></div>
     <div id="ports" class="hint"></div>
@@ -91,7 +91,7 @@
     <button id="vehicle-add" class="btn sec">Add vehicle</button>
     <button id="helpers" class="btn sec">Create missing fuel helpers in HA</button>
   </div>
-  <p class="hint">Each vehicle needs an <code>input_select</code> helper naming its charger, an odometer sensor and (for battery-side numbers) a state-of-charge sensor plus the pack capacity. The fuel helpers (<code>input_select.&lt;name&gt;_fuel_equivalent</code>, <code>input_number.&lt;name&gt;_equivalent_mpg</code>) set which gasoline grade and MPG the vehicle is compared against; they override the values typed here. Changing them re-prices the fuel statistics automatically.</p>
+  <p class="hint">Each vehicle needs an odometer sensor and (for battery-side numbers) a state-of-charge sensor plus the pack capacity. The fuel helpers (<code>input_select.&lt;name&gt;_fuel_equivalent</code>, <code>input_number.&lt;name&gt;_equivalent_mpg</code>) set which gasoline grade and MPG the vehicle is compared against; they override the values typed here. Changing them re-prices the fuel statistics automatically.</p>
 </section>
 
 <section id="tab-fuel" hidden>
@@ -138,10 +138,10 @@
   </div>
   <div class="card">
     <h2>Port detection</h2>
-    <p class="hint">A charger status sensor's plug-in (anything but <code>available</code>) is matched to the vehicle whose plug sensor turned on closest in time. With <i>switch the charger helpers</i> on, the vehicle's <code>input_select</code> and its charger history follow the detected port. When nobody claims a plug-in, the refresh button of every unplugged vehicle that has one is pressed once.</p>
+    <p class="hint">A charger status sensor's plug-in (anything but <code>available</code>) is matched to the vehicle whose plug sensor turned on closest in time. With <i>assign vehicles</i> on, the vehicle's charger history follows the detected port from the plug-in time. A port chosen by hand (Status tab or <code>select.ev_charger_&lt;port&gt;_vehicle</code>) beats detection until it is unplugged. When nobody claims a plug-in, the refresh button of every unplugged vehicle that has one is pressed once.</p>
     <div class="grid">
       <label class="f">Detect vehicles on ports <input type="checkbox" id="dt-enabled" style="display:inline-block;width:auto"></label>
-      <label class="f">Switch the charger helpers to the detected port <input type="checkbox" id="dt-auto" style="display:inline-block;width:auto"></label>
+      <label class="f">Assign vehicles to the detected port (a port chosen by hand always applies) <input type="checkbox" id="dt-auto" style="display:inline-block;width:auto"></label>
       <label class="f">Vehicle may report up to (minutes) before the charger <input type="number" id="dt-before" min="0" max="60"></label>
       <label class="f">… and up to (minutes) after <input type="number" id="dt-after" min="1" max="120"></label>
       <label class="f">Ask for a refresh after (minutes) unclaimed <input type="number" id="dt-refresh" min="0" max="60"></label>
@@ -208,7 +208,10 @@ async function loadStatus() {
   const ports = last.ports || {};
   if (Object.keys(ports).length) {
     const when = (iso) => iso ? new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '?';
-    html += `<div class="card"><h2>Ports</h2><table><thead><tr><th>Port</th><th>Status</th><th>Vehicle</th><th>Since</th><th>Confidence</th></tr></thead><tbody>${Object.entries(ports).map(([n, p]) => `<tr><td><b>${esc(n)}</b></td><td>${esc(p.status || '–')}</td><td>${p.vehicle_name ? esc(p.vehicle_name) : p.plugged ? '<span class="pill crit">unknown – nobody claimed it</span>' : '<span class="pill">nothing plugged in</span>'}</td><td>${when(p.since)}</td><td>${esc(p.confidence || '–')}${p.plug_delay_s != null && p.vehicle ? ` (plug sensor +${p.plug_delay_s} s)` : ''}</td></tr>`).join('')}</tbody></table></div>`;
+    const names = (cfg ? cfg.vehicles : []).map((v) => v.name);
+    const opt = (p) => p.override && p.plugged === false ? ((cfg ? cfg.vehicles : []).find((v) => v.id === p.override.value) || { name: 'Unknown' }).name : p.vehicle_name || (p.plugged ? 'Unknown' : 'None');
+    const conf = (p) => p.confidence === 'manual' ? '<span class="pill on">set by hand</span> until unplugged' : p.confidence === 'detecting' ? 'detecting…' : p.confidence === 'unclaimed' ? 'nobody claimed it' : p.confidence === 'conflict' ? 'detected vehicle was set by hand on another port' : esc(p.confidence || '–') + (p.plug_delay_s != null ? ` (plug sensor ${p.plug_delay_s >= 0 ? '+' : ''}${p.plug_delay_s} s)` : '');
+    html += `<div class="card"><h2>Ports</h2><table><thead><tr><th>Port</th><th>Status</th><th>Vehicle</th><th>Since</th><th>Confidence</th></tr></thead><tbody>${Object.entries(ports).map(([n, p]) => `<tr><td><b>${esc(n)}</b></td><td>${esc(p.status || '–')}</td><td><select class="port-sel" data-port="${esc(n)}" style="width:auto">${[...names, 'Unknown', 'None'].map((o) => `<option${o === opt(p) ? ' selected' : ''}>${esc(o)}</option>`).join('')}${p.override ? '<option value="Auto">Auto (back to detection)</option>' : ''}</select>${p.override && p.plugged === false ? ' <span class="hint">next plug-in</span>' : ''}</td><td>${when(p.since)}</td><td>${conf(p)}</td></tr>`).join('')}</tbody></table><p class="hint">Choosing a vehicle (or Unknown for another car) overrides detection until that port is unplugged; the same choice is <code>select.ev_charger_&lt;port&gt;_vehicle</code> in HA.</p></div>`;
   }
   const dur = (min) => min == null ? '–' : min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')} min`;
   const clock = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + (new Date(iso).toDateString() !== new Date().toDateString() ? ' ' + new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' }) : '') : '–';
@@ -236,6 +239,10 @@ async function loadStatus() {
     html += `</div>`;
   }
   $('#st-vehicles').innerHTML = html || '<div class="card"><p class="hint">No vehicles configured yet – add them on the Vehicles tab.</p></div>';
+  document.querySelectorAll('.port-sel').forEach((el) => el.addEventListener('change', async () => {
+    try { await api('port', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ port: el.dataset.port, value: el.value }) }); toast(`${el.dataset.port}: ${el.value}`); setTimeout(loadStatus, 2500); }
+    catch (e) { toast('port: ' + e.message); }
+  }));
   const f = last.fuel || {}; const tb = $('#st-fuel tbody'); tb.innerHTML = '';
   for (const g of ['regular', 'midgrade', 'premium', 'diesel']) {
     const p = f[g]; if (!p) continue;
@@ -268,7 +275,6 @@ function renderVehicles() {
     wrap.insertAdjacentHTML('beforeend', `<div class="card" data-i="${i}"><h2>${esc(v.name || 'vehicle')} <span class="sub"><code>sensor.${esc(cfg.entity_prefix)}_${esc(v.id || '?')}_*</code></span><span class="spacer"></span><label><input type="checkbox" data-k="enabled" ${v.enabled ? 'checked' : ''}> enabled</label> <button class="lnk del v-del">remove</button></h2>
       <div class="grid">
         ${f('Name', 'name')} ${f('Id (entity ids)', 'id')}
-        ${f('Charger helper (input_select)', 'charger_select', 'text', 'list="dl-selects"')}
         ${f('Odometer sensor (mi)', 'odometer', 'text', 'list="dl-distance"')}
         ${f('State of charge sensor (%)', 'soc', 'text', 'list="dl-battery"')}
         ${f('Pack capacity sensor (kWh, optional)', 'capacity_entity', 'text', 'list="dl-storage"')}
@@ -310,7 +316,7 @@ function readChargers() {
 }
 $('#charger-add').addEventListener('click', () => { $('#chargers tbody').insertAdjacentHTML('beforeend', `<tr><td><input type="text" class="m ch-name" placeholder="North"></td><td><input type="text" class="w ch-power" list="dl-power" placeholder="sensor.charger_power"></td><td><input type="text" class="w ch-status" list="dl-status" placeholder="sensor.charger_status"></td><td><input type="number" class="s ch-kw" step="0.1" min="0" placeholder="5.76"></td><td><button class="lnk del ch-del">remove</button></td></tr>`); renderVehiclesBindOnly(); });
 function renderVehiclesBindOnly() { const tb = $('#chargers tbody'); tb.querySelectorAll('.ch-del').forEach((b) => { b.onclick = () => { b.closest('tr').remove(); readChargers(); }; }); tb.querySelectorAll('input').forEach((i) => { i.oninput = readChargers; }); }
-$('#vehicle-add').addEventListener('click', () => { cfg.vehicles.push({ id: '', name: '', enabled: true, charger_select: '', odometer: '', soc: '', capacity_kwh: 0, capacity_entity: '', charge_efficiency: 0.9, fuel_select: '', mpg_entity: '', fuel_grade: 'regular', mpg: 20, engine_efficiency: 0, plug_entity: '', refresh_button: '', charge_limit_entity: '', charge_limit: 80 }); setDirty(true); renderVehicles(); });
+$('#vehicle-add').addEventListener('click', () => { cfg.vehicles.push({ id: '', name: '', enabled: true, odometer: '', soc: '', capacity_kwh: 0, capacity_entity: '', charge_efficiency: 0.9, fuel_select: '', mpg_entity: '', fuel_grade: 'regular', mpg: 20, engine_efficiency: 0, plug_entity: '', refresh_button: '', charge_limit_entity: '', charge_limit: 80 }); setDirty(true); renderVehicles(); });
 $('#helpers').addEventListener('click', async () => { if (dirty) { toast('save the configuration first'); return; } try { const r = await post('helpers'); cfg.vehicles = r.vehicles; renderVehicles(); toast(r.created.length ? 'created: ' + r.created.join(', ') : 'nothing to create'); } catch (e) { toast(e.message); } });
 
 // ---------- fuel / settings ----------

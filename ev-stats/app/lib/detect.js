@@ -27,9 +27,9 @@ const binaryOn = (s) => ['on', 'true', 'connected', 'plugged', 'plugged_in', 'lo
  * within [-beforeMs, +afterMs]; every vehicle transition is used at most once, closest pairs first.
  *   chargers: { name: [transitions] }   vehicles: { id: [transitions] }
  * -> [{ charger, at, vehicle | null, delta_ms | null, candidates, alternatives: [{vehicle, delta_ms}], ambiguous }] sorted by time;
- *    candidates/alternatives hold only vehicle events no other charger event claimed
+ *    candidates/alternatives hold only vehicle events no other charger event claimed; `late` = matched after the window (lateMs)
  */
-function matchPlugins(chargers, vehicles, beforeMs = 3 * MIN, afterMs = 15 * MIN, closeMs = 2 * MIN) {
+function matchPlugins(chargers, vehicles, beforeMs = 3 * MIN, afterMs = 15 * MIN, closeMs = 2 * MIN, lateMs = 0) {
   const events = [];
   for (const [name, list] of Object.entries(chargers)) for (const tr of list) if (tr.on) events.push({ charger: name, at: tr.t, vehicle: null, delta_ms: null, candidates: [] });
   const pairs = [];
@@ -51,6 +51,18 @@ function matchPlugins(chargers, vehicles, beforeMs = 3 * MIN, afterMs = 15 * MIN
     e.alternatives = alts.map((p) => ({ vehicle: p.vid, delta_ms: p.d }));
     e.candidates = [...new Set([...(e.vehicle ? [e.vehicle] : []), ...alts.map((p) => p.vid)])];
     e.ambiguous = !!e.vehicle && alts.some((p) => Math.abs(p.d) - Math.abs(e.delta_ms) < closeMs);
+  }
+  // Late reports (lateMs > afterMs): an event still unclaimed takes the first unused vehicle plug-in after the
+  // window, up to lateMs, as long as the port was not unplugged in between. Marked `late` (low confidence).
+  if (lateMs > afterMs) for (const e of events.slice().sort((a, b) => a.at - b.at)) {
+    if (e.vehicle) continue;
+    const unplug = (chargers[e.charger] || []).find((tr) => !tr.on && tr.t > e.at);
+    let best = null;
+    for (const [vid, list] of Object.entries(vehicles)) for (const tr of list) {
+      if (!tr.on || usedV.has(vid + '@' + tr.t)) continue; const d = tr.t - e.at;
+      if (d > afterMs && d <= lateMs && (!unplug || tr.t < unplug.t) && (!best || d < best.d)) best = { vid, t: tr.t, d };
+    }
+    if (best) { e.vehicle = best.vid; e.delta_ms = best.d; e.late = true; usedV.add(best.vid + '@' + best.t); e.candidates = [best.vid]; }
   }
   return events.sort((a, b) => a.at - b.at);
 }
@@ -109,4 +121,34 @@ function chargeEstimate(o) {
 }
 const r2 = (v) => Math.round(v * 100) / 100;
 
-module.exports = { transitions, chargerPlugged, binaryOn, matchPlugins, lastState, typicalKw, cheapWindow, chargeEstimate };
+/**
+ * Who is on one port right now. o: {
+ *   plugged (true | false | null = no status), statusT (ms of the last status change),
+ *   ev (the port's latest plug-in event from matchPlugins, or null), unplugs ([ms] unplug transitions in the lookback),
+ *   override ({ value: vehicle id | 'unknown', at } | null), prev (the port's last result), fallback (vehicle id | null:
+ *   the one vehicle whose plug sensor is on and whose charger history says this port), nowMs, afterMs }
+ * -> { occupant: vehicle id | 'unknown' | null (free) | undefined (still detecting / no data: change nothing),
+ *      confidence: manual | high | medium | low | history | unclaimed | detecting | null, since (ms), clearOverride }
+ * A manual override wins until the port is unplugged after it was set (then it is cleared).
+ */
+function resolvePort(o) {
+  let override = o.override || null, clearOverride = false;
+  const lastUnplug = Math.max(-Infinity, ...(o.unplugs || []));
+  if (override && lastUnplug > override.at) { override = null; clearOverride = true; }
+  const evCurrent = o.ev && o.ev.at > lastUnplug ? o.ev : null;
+  const sessionStart = evCurrent ? evCurrent.at : (o.plugged && o.prev && o.prev.since && o.prev.occupant !== null ? o.prev.since : null);
+  if (override) return { occupant: o.plugged === false ? null : override.value, preset: o.plugged === false, confidence: 'manual', since: o.plugged === false ? override.at : (sessionStart ?? override.at), clearOverride };
+  if (o.plugged === null || o.plugged === undefined) return { occupant: undefined, confidence: null, since: null, clearOverride };
+  if (o.plugged === false) return { occupant: null, confidence: null, since: o.statusT ?? null, clearOverride };
+  if (evCurrent) {
+    if (evCurrent.vehicle) return { occupant: evCurrent.vehicle, confidence: evCurrent.late ? 'low' : evCurrent.ambiguous ? 'medium' : 'high', since: evCurrent.at, clearOverride };
+    if (o.nowMs - evCurrent.at < (o.afterMs ?? 15 * MIN)) return { occupant: undefined, confidence: 'detecting', since: evCurrent.at, clearOverride };
+    return { occupant: 'unknown', confidence: 'unclaimed', since: evCurrent.at, clearOverride };
+  }
+  // plugged in since before the lookback: keep the last result of this session, else trust the charger history
+  if (o.prev && o.prev.occupant !== undefined && o.prev.occupant !== null && o.prev.confidence !== 'manual') return { occupant: o.prev.occupant, confidence: o.prev.confidence, since: o.prev.since ?? null, clearOverride };
+  if (o.fallback) return { occupant: o.fallback, confidence: 'history', since: o.statusT ?? null, clearOverride };
+  return { occupant: 'unknown', confidence: 'unclaimed', since: o.statusT ?? null, clearOverride };
+}
+
+module.exports = { resolvePort, transitions, chargerPlugged, binaryOn, matchPlugins, lastState, typicalKw, cheapWindow, chargeEstimate };

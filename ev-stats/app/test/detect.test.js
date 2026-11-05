@@ -58,3 +58,37 @@ test('chargeEstimate(): minutes, finish, latest start and the start-early flag',
   assert.equal(D.chargeEstimate({ soc: 50, target: 85, capacityKwh: 100, efficiency: 0.9, kw: null, nowMs: T0, window: w }).minutes, null);
   assert.equal(D.chargeEstimate({ soc: 'unknown', target: 85, capacityKwh: 100 }), null);
 });
+
+test('matchPlugins(): a plug report after the window is a late (low) match unless the port was unplugged first', () => {
+  const ch = { South: D.transitions([row(0, 'available'), row(10, 'plugged_in')], D.chargerPlugged) };
+  const q8 = { q8: D.transitions([row(0, 'off'), row(40, 'on')], D.binaryOn) };
+  const m = D.matchPlugins(ch, q8, 3 * 60000, 15 * 60000, 2 * 60000, 6 * 3600000);
+  assert.deepEqual([m[0].vehicle, m[0].late, m[0].delta_ms], ['q8', true, 30 * 60000]);
+  const gone = D.matchPlugins({ South: D.transitions([row(0, 'available'), row(10, 'plugged_in'), row(30, 'available')], D.chargerPlugged) }, q8, 3 * 60000, 15 * 60000, 2 * 60000, 6 * 3600000);
+  assert.equal(gone[0].vehicle, null);
+});
+
+test('resolvePort(): manual beats detection until the port is unplugged; detecting / unclaimed / history', () => {
+  const ev = { at: T0 + 10 * 60000, vehicle: 'r1s', delta_ms: 0, ambiguous: false };
+  const base = { plugged: true, statusT: T0 + 10 * 60000, ev, unplugs: [], prev: {}, fallback: null, nowMs: T0 + 60 * 60000, afterMs: 15 * 60000 };
+  assert.deepEqual(D.resolvePort(base), { occupant: 'r1s', confidence: 'high', since: ev.at, clearOverride: false });
+  // set by hand while plugged: applies from the plug-in
+  const man = D.resolvePort({ ...base, override: { value: 'unknown', at: T0 + 30 * 60000 } });
+  assert.deepEqual([man.occupant, man.confidence, man.since], ['unknown', 'manual', ev.at]);
+  // unplugged after it was set: cleared, port free
+  const off = D.resolvePort({ ...base, plugged: false, unplugs: [T0 + 50 * 60000], override: { value: 'unknown', at: T0 + 30 * 60000 } });
+  assert.deepEqual([off.occupant, off.clearOverride], [null, true]);
+  // preset while free survives the plug-in that follows, and is cleared by the unplug after it
+  const preset = { value: 'q8', at: T0 + 5 * 60000 };
+  assert.equal(D.resolvePort({ ...base, plugged: false, ev: null, override: preset }).preset, true);
+  assert.deepEqual([D.resolvePort({ ...base, override: preset }).occupant, D.resolvePort({ ...base, override: preset }).since], ['q8', ev.at]);
+  // unclaimed: detecting inside the window, unknown after it
+  const un = { ...ev, vehicle: null, delta_ms: null };
+  assert.deepEqual([D.resolvePort({ ...base, ev: un, nowMs: ev.at + 5 * 60000 }).occupant, D.resolvePort({ ...base, ev: un, nowMs: ev.at + 5 * 60000 }).confidence], [undefined, 'detecting']);
+  assert.equal(D.resolvePort({ ...base, ev: un }).occupant, 'unknown');
+  assert.equal(D.resolvePort({ ...base, ev: { ...ev, late: true } }).confidence, 'low');
+  // plugged since before the lookback: the last result, else the charger history
+  assert.deepEqual(D.resolvePort({ ...base, ev: null, prev: { occupant: 'q8', confidence: 'high', since: T0 } }).occupant, 'q8');
+  assert.deepEqual([D.resolvePort({ ...base, ev: null, fallback: 'r1s' }).occupant, D.resolvePort({ ...base, ev: null, fallback: 'r1s' }).confidence], ['r1s', 'history']);
+  assert.equal(D.resolvePort({ ...base, plugged: null }).occupant, undefined);
+});

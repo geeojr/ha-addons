@@ -87,16 +87,16 @@ one device per vehicle. Every sensor of a window carries **all** of that window'
 `vehicle`, `charger`, `fuel_grade`, `mpg_equivalent`, `capacity_kwh`, `from`, `to`, `hours`,
 `raw_hours`, `energy_basis`, `energy_kwh_per_mile` and the energy parameters as attributes, so a
 card can show the breakdown from any one of them. Two live sensors per vehicle:
-`sensor.<prefix>_<vehicle>_charger` (assigned charger; attributes `charging`, `charger_power_kw`,
+`sensor.<prefix>_<vehicle>_charger` (the port it is on now, from its charger history; attributes `charging`, `charger_power_kw`,
 `energy_mpg`, `drive_kwh_per_mile`, `plugged`, `detected_port`, the charge estimate) and `sensor.<prefix>_<vehicle>_fuel_price` (today's price of
 its grade).
 
-### Helpers
+### Which port each vehicle uses
 
-Each vehicle names its charger with an `input_select` helper you create (options = the charger
-names configured on the Vehicles tab). Switching it appends an entry to the vehicle's **charger
-history**; edit that history on the Vehicles tab when a vehicle used another charger in the
-past, then "Apply & rebuild".
+The add-on keeps every vehicle's **charger history** itself: port detection (below) and the port selects write
+it, and you can edit it on the Vehicles tab when a vehicle used another charger in the past, then "Apply & rebuild".
+A port taken by another vehicle, detected or chosen by hand, takes that port off the vehicle that had it. Unplugging
+changes nothing. Versions before 1.3.0 read an `input_select` helper per vehicle; it is no longer used and can be deleted.
 
 ### Port detection
 
@@ -104,14 +104,30 @@ Give each charger its **status sensor** (any state other than `available` / `una
 `unknown` counts as plugged in) and each vehicle its **plug sensor** (`binary_sensor`). Every run
 looks at the last *lookback hours* of both: a charger's plug-in is matched to the vehicle whose plug
 sensor turned on closest in time, within *before* / *after* minutes, each vehicle event used once.
-The result is kept per port (`sensor.<prefix>_charger_<port>_vehicle`: the vehicle's name, `unknown`
-while something unclaimed is plugged in, `none` when the port is free; attributes `status`, `since`,
-`confidence` — `medium` when another vehicle's plug-in that no other port claimed was nearly as close, `plug_delay_s`) and, with *switch the
-charger helpers* on, the vehicle's `input_select` is set to that port and its charger history gets an
-entry at the plug-in time, so the hourly rows follow the port from then on. A plug-in nobody claimed
-after *refresh after minutes* presses the **refresh button** of every unplugged vehicle that has one
-(the Audi needs that nudge); the vehicle's plug sensor then usually turns on within the *after*
-window. Detection never un-assigns a vehicle: unplugging leaves the helper where it was.
+The result is kept per port and published as `select.<prefix>_charger_<port>_vehicle`: the vehicle's name,
+`Unknown` while something nobody claimed is plugged in, or `None` when the port is free. Attributes: `status`,
+`plugged`, `since`, `confidence`, `plug_delay_s`, `manual`, `candidates`. Confidence:
+
+| Confidence | Meaning |
+|---|---|
+| manual | chosen by hand (beats everything until the port is unplugged) |
+| high | the only unclaimed vehicle plug-in inside the window |
+| medium | another unclaimed vehicle plug-in was within 2 minutes of the winner |
+| low | the vehicle's plug sensor reported after the window, before the port was unplugged |
+| history | plugged in since before the lookback; the one plugged-in vehicle whose history says this port |
+| unclaimed / detecting | nobody claimed the plug-in (yet) |
+| conflict | the detected vehicle was chosen by hand on another port |
+
+With *assign vehicles to the detected port* on, the vehicle's charger history gets an entry at the plug-in time,
+so the hourly rows follow the port from then on (those hours are recomputed).
+
+**Choosing by hand.** Pick a vehicle, or `Unknown` for a car that isn't tracked, in the select or in the panel's
+Ports table. The choice applies from the current plug-in and is cleared when that port is unplugged. Chosen while the
+port is free, it waits for the next plug-in. `Auto` drops the choice and goes back to detection. The add-on receives
+the select through Home Assistant's websocket (`mqtt/subscribe` on `ev/stats/ports/+/set`).
+
+A plug-in nobody claimed after *refresh after minutes* presses the **refresh button** of every unplugged vehicle that
+has one (the Audi needs that nudge); the vehicle's plug sensor then usually turns on within the *after* window.
 
 ### Charge estimate
 
@@ -161,7 +177,7 @@ contains the day. It is imported daily as `evstats:fuel_price_<grade>` from *His
 Sidebar **EV Stats** (ingress, admins). Tabs: Status (every vehicle's windows, coverage, fuel prices,
 recompute / rebuild / refresh), Vehicles (chargers, vehicles, charger history, helper creation),
 Fuel prices, Settings, Log. Endpoints under the ingress URL: `GET /api/config`, `POST /api/config`,
-`GET /api/status`, `POST /api/poll`, `POST /api/rebuild {vehicle?}`, `POST /api/fuel/refresh`,
+`GET /api/status`, `POST /api/poll`, `POST /api/port {port, value}`, `POST /api/rebuild {vehicle?}`, `POST /api/fuel/refresh`,
 `POST /api/helpers`, `POST /api/assignments {vehicle, list:[{from, charger}]}`, `GET /api/rows?vehicle=&hours=`,
 `GET /api/sessions?vehicle=&limit=`.
 

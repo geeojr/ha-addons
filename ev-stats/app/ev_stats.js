@@ -39,7 +39,7 @@ const VERSION = require('./package.json').version;
 const DIR = process.env.EV_STATS_DIR || (fs.existsSync('/data/options.json') ? '/data' : path.join(os.homedir(), '.config/ev-stats'));
 const CONFIG_PATH = path.join(DIR, 'config.json'), STATE_PATH = path.join(DIR, 'state.json'), ROLLUP_PATH = path.join(DIR, 'rollup.json'), FUEL_PATH = path.join(DIR, 'fuel.json');
 const ONCE = process.argv.includes('--once');
-const HOUR = R.HOUR, DAY = 86400000;
+const HOUR = R.HOUR, DAY = 86400000, MIN_MS = 60000;
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 const log = (...a) => { console.log(new Date().toISOString(), ...a); if (state) { state.log.unshift({ at: Date.now(), msg: a.join(' ').slice(0, 300) }); state.log.length = Math.min(state.log.length, 120); } };
 
@@ -70,7 +70,7 @@ const METRICS = { // key: [unit, icon, label, precision]
   energy_mpg: ['mpg', 'mdi:engine', 'Equivalent MPG (energy)', 1],
 };
 const STAT_KEYS = { miles: ['mi', 'mi'], home_energy: ['home', 'kWh'], home_cost: ['cost', 'USD'], battery_energy: ['pack', 'kWh'], fuel_gallons: ['gal', 'gal'], fuel_cost: ['fuel', 'USD'], savings: ['save', 'USD'], energy_fuel_gallons: ['egal', 'gal'], energy_fuel_cost: ['efuel', 'USD'], energy_savings: ['esave', 'USD'], other_energy: ['other', 'kWh'], other_cost: ['ocost', 'USD'] };
-const DEFAULT_VEHICLE = { id: '', name: '', enabled: true, charger_select: '', odometer: '', soc: '', capacity_kwh: 0, capacity_entity: '', charge_efficiency: 0.9, fuel_select: '', mpg_entity: '', fuel_grade: 'regular', mpg: 20, engine_efficiency: 0,
+const DEFAULT_VEHICLE = { id: '', name: '', enabled: true, odometer: '', soc: '', capacity_kwh: 0, capacity_entity: '', charge_efficiency: 0.9, fuel_select: '', mpg_entity: '', fuel_grade: 'regular', mpg: 20, engine_efficiency: 0,
   plug_entity: '', refresh_button: '', charge_limit_entity: '', charge_limit: 80 }; // plug sensor (binary), button to ask the car for fresh data, charge target (% entity or fixed)
 // Energy-based fuel equivalent: measured driving kWh/mi -> wheel energy -> gallons an engine would burn for it.
 //   kWh per gallon: lower heating value used by the EPA for MPGe (gasoline 33.7 kWh = 115,000 BTU; diesel 37.7 kWh = 128,500 BTU)
@@ -105,7 +105,7 @@ if (!config) { fs.mkdirSync(DIR, { recursive: true }); config = { ...DEFAULT_CON
 const SUPERVISOR = process.env.SUPERVISOR_TOKEN ? { ha_url: 'http://supervisor/core', ha_token: process.env.SUPERVISOR_TOKEN } : {};
 normalizeConfig();
 let state = loadJson(STATE_PATH, null) || { assignments: {}, settings: {}, published: {}, backfilled: {}, stats_cursor: {}, fuel_stats_done: {}, last: null, log: [] };
-state.log = state.log || []; state.assignments = state.assignments || {}; state.ports = state.ports || {}; state.detect_done = state.detect_done || {}; state.settings = state.settings || {}; state.published = state.published || {}; state.backfilled = state.backfilled || {}; state.stats_cursor = state.stats_cursor || {}; state.fuel_stats_done = state.fuel_stats_done || {};
+state.log = state.log || []; state.assignments = state.assignments || {}; state.ports = state.ports || {}; state.detect_done = state.detect_done || {}; state.recompute_from = state.recompute_from || {}; state.settings = state.settings || {}; state.published = state.published || {}; state.backfilled = state.backfilled || {}; state.stats_cursor = state.stats_cursor || {}; state.fuel_stats_done = state.fuel_stats_done || {};
 let rollup = loadJson(ROLLUP_PATH, {});   // { vehicleId: { hourIdx: row } }
 let fuel = loadJson(FUEL_PATH, { weekly: {}, weekly_at: 0, daily: {}, aaa: null, aaa_at: 0 });
 let rollupDirty = false;
@@ -128,7 +128,7 @@ function normalizeConfig() {
   config.windows = [...new Set((config.windows || []).map((w) => String(w).trim().toLowerCase()).filter(windowRange))];
   if (!config.windows.length) config.windows = [...DEFAULT_CONFIG.windows];
   config.metrics = (config.metrics || []).filter((m) => METRICS[m]); if (!config.metrics.length) config.metrics = [...DEFAULT_CONFIG.metrics];
-  config.vehicles = (config.vehicles || []).map((v) => ({ ...DEFAULT_VEHICLE, ...v, id: slug(v.id || v.name || 'ev'), capacity_kwh: Number(v.capacity_kwh) || 0, charge_efficiency: Math.min(1, Math.max(0.5, Number(v.charge_efficiency) || 0.9)), mpg: Number(v.mpg) || 20, fuel_grade: F.GRADES.includes(v.fuel_grade) ? v.fuel_grade : 'regular', engine_efficiency: clamp(v.engine_efficiency, 0.05, 0.6, 0), charge_limit: clamp(v.charge_limit, 1, 100, 80) }));
+  config.vehicles = (config.vehicles || []).map(({ charger_select, ...v }) => ({ ...DEFAULT_VEHICLE, ...v, id: slug(v.id || v.name || 'ev'), capacity_kwh: Number(v.capacity_kwh) || 0, charge_efficiency: Math.min(1, Math.max(0.5, Number(v.charge_efficiency) || 0.9)), mpg: Number(v.mpg) || 20, fuel_grade: F.GRADES.includes(v.fuel_grade) ? v.fuel_grade : 'regular', engine_efficiency: clamp(v.engine_efficiency, 0.05, 0.6, 0), charge_limit: clamp(v.charge_limit, 1, 100, 80) }));
   config.chargers = Object.fromEntries(Object.entries(config.chargers || {}).filter(([k, v]) => k && v && v.power).map(([k, v]) => [k.trim(), { power: String(v.power).trim(), status: String(v.status || '').trim(), max_kw: clamp(v.max_kw, 0, 100, 0) }]));
 }
 function slug(s) { return String(s || '').replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '').toLowerCase(); }
@@ -153,19 +153,21 @@ async function haTimeZone() { try { const t = (await ha('GET', '/api/config')).t
 function haWS() {
   const url = (config.ha_url.startsWith('http://supervisor') ? 'ws://supervisor/core/websocket' : config.ha_url.replace(/^http/, 'ws').replace(/\/$/, '') + '/api/websocket');
   const ws = new WebSocket(url);
-  let id = 0; const pending = new Map();
+  let id = 0; const pending = new Map(); const subs = new Map(); let onClosed; const closed = new Promise((r) => { onClosed = r; });
   const ready = new Promise((resolve, reject) => {
     ws.onmessage = (ev) => {
       const m = JSON.parse(ev.data);
       if (m.type === 'auth_required') ws.send(JSON.stringify({ type: 'auth', access_token: config.ha_token }));
       else if (m.type === 'auth_ok') resolve();
       else if (m.type === 'auth_invalid') reject(new Error('HA auth invalid'));
+      else if (m.type === 'event' && subs.has(m.id)) { try { subs.get(m.id)(m.event); } catch (e) { log('event handler:', e.message); } }
       else if (m.type === 'result' && pending.has(m.id)) { const { res, rej } = pending.get(m.id); pending.delete(m.id); m.success ? res(m.result) : rej(new Error(JSON.stringify(m.error))); }
     };
     ws.onerror = (e) => reject(new Error('HA websocket error ' + (e.message || '')));
-    ws.onclose = () => { for (const { rej } of pending.values()) rej(new Error('HA websocket closed')); pending.clear(); };
+    ws.onclose = () => { for (const { rej } of pending.values()) rej(new Error('HA websocket closed')); pending.clear(); onClosed(); };
   });
-  return { ready, call: (msg) => new Promise((res, rej) => { const i = ++id; pending.set(i, { res, rej }); ws.send(JSON.stringify({ id: i, ...msg })); }), close: () => ws.close() };
+  const call = (msg, onEvent) => new Promise((res, rej) => { const i = ++id; pending.set(i, { res, rej }); if (onEvent) subs.set(i, onEvent); ws.send(JSON.stringify({ id: i, ...msg })); });
+  return { ready, closed, call, subscribe: (msg, onEvent) => call(msg, onEvent), close: () => ws.close() };
 }
 async function withWS(fn) { const w = haWS(); await w.ready; try { return await fn(w); } finally { w.close(); } }
 
@@ -202,72 +204,94 @@ async function loadPlans(states) {
 }
 const rateAt = (h) => { if (!plans) return null; const ri = rateInfo(tz.parts(h * HOUR + 1800000), plans); return ri ? ri.rate : null; };
 
-function chargerOf(v, states) {
-  const s = states.find((x) => x.entity_id === v.charger_select);
-  if (!s) return null;
-  const want = String(s.state).trim().toLowerCase();
-  return Object.keys(config.chargers).find((k) => k.toLowerCase() === want) || null;
-}
-function noteAssignment(v, charger, nowMs) {
+/** The vehicle's current port: the last entry of its charger history (kept by the add-on: detection, the port selects, the editor). */
+function chargerOf(v) { const list = state.assignments[v.id] || []; return list.length ? list[list.length - 1].charger : null; }
+/**
+ * The vehicle is on `charger` (null = on no home port) from `at` on. Later entries of its history are replaced (they
+ * belong to the same plug-in session); the hours from `at` are recomputed on the next poll. Returns true on a change.
+ */
+function assign(v, charger, at, why) {
   const list = state.assignments[v.id] || (state.assignments[v.id] = []);
-  const cur = list.length ? list[list.length - 1].charger : undefined;
-  if (cur === charger) return false;
-  list.push({ at: list.length ? Math.max(nowMs, list[list.length - 1].at + 1) : 0, charger }); // the first assignment counts from the beginning of time (backfill); later ones stay in order
-  log(`${v.name}: charger -> ${charger || 'none'}`);
+  at = Math.min(Math.round(at || Date.now()), Date.now());
+  if (chargerOf(v) === charger && chargerAt(v)(at / HOUR) === charger) return false;
+  while (list.length > 1 && list[list.length - 1].at >= at) list.pop();
+  if (list.length === 1 && list[0].at >= at) list.pop();
+  if (!list.length || chargerOf(v) !== charger) list.push({ at: list.length ? at : 0, charger, by: why || null }); // the very first entry counts from the beginning of time
+  state.recompute_from[v.id] = Math.min(state.recompute_from[v.id] ?? at, at);
+  log(`${v.name}: charger -> ${charger || 'none'} from ${new Date(at).toISOString()}${why ? ' (' + why + ')' : ''}`);
   return true;
 }
 const stateOf = (states, id) => { const s = id && states.find((x) => x.entity_id === id); return s ? s.state : null; };
 
 /**
  * Who is on which port. Reads the last lookback_hours of the chargers' status sensors and the vehicles' plug sensors,
- * matches plug-in events (lib/detect.js), remembers the result per port (state.ports), switches the vehicle's charger
- * helper when auto_assign is on, and asks unplugged vehicles with a refresh button for fresh data when a plug-in
- * stays unclaimed. `states` is updated in place when a helper is switched so the rest of the poll sees it.
+ * matches plug-in events (lib/detect.js), applies manual overrides from the port selects, remembers the result per
+ * port (state.ports) and, with auto_assign on (always for a manual choice), writes it into the vehicles' charger
+ * history from the plug-in time. Asks unplugged vehicles with a refresh button for fresh data when a plug-in stays unclaimed.
  */
 async function detect(w, states, nowMs) {
-  const dc = config.detection; if (!dc.enabled) return;
+  const dc = config.detection;
   const chargers = Object.entries(config.chargers).filter(([, c]) => c.status); if (!chargers.length) return;
   const vehicles = config.vehicles.filter((v) => v.enabled && v.plug_entity);
   const hist = await rawStates(w, [...chargers.map(([, c]) => c.status), ...vehicles.map((v) => v.plug_entity)], nowMs - dc.lookback_hours * HOUR, nowMs);
   const cTr = {}, vTr = {};
   for (const [name, c] of chargers) cTr[name] = D.transitions(hist[c.status], D.chargerPlugged);
   for (const v of vehicles) vTr[v.id] = D.transitions(hist[v.plug_entity], D.binaryOn);
-  const events = D.matchPlugins(cTr, vTr, dc.before_minutes * 60000, dc.after_minutes * 60000);
+  const events = dc.enabled ? D.matchPlugins(cTr, vTr, dc.before_minutes * MIN_MS, dc.after_minutes * MIN_MS, 2 * MIN_MS, dc.lookback_hours * HOUR) : [];
+  const res = {};
   for (const [name, c] of chargers) {
     const last = D.lastState(hist[c.status]); const plugged = last ? D.chargerPlugged(last.s) : null;
     const port = state.ports[name] || (state.ports[name] = {});
-    Object.assign(port, { status: last ? last.s : null, plugged, status_entity: c.status, updated: new Date(nowMs).toISOString() });
-    if (plugged === false) { Object.assign(port, { vehicle: null, vehicle_name: null, confidence: null, since: last ? new Date(last.t).toISOString() : null }); continue; }
-    const mine = events.filter((e) => e.charger === name); const ev = mine[mine.length - 1];
-    if (!ev) { // plugged in since before the lookback window: keep what we knew, else trust a vehicle whose helper and plug sensor both agree
-      if (!port.vehicle) { const agree = vehicles.filter((v) => D.binaryOn(stateOf(states, v.plug_entity)) && chargerOf(v, states) === name); if (agree.length === 1) Object.assign(port, { vehicle: agree[0].id, vehicle_name: agree[0].name, confidence: 'helper', since: last ? new Date(last.t).toISOString() : null }); }
-      continue;
+    const mine = events.filter((e) => e.charger === name); const ev = mine[mine.length - 1] || null;
+    const fb = vehicles.filter((v) => D.binaryOn(stateOf(states, v.plug_entity)) && chargerOf(v) === name);
+    const r = D.resolvePort({ plugged, statusT: last ? last.t : null, ev, unplugs: cTr[name].filter((t) => !t.on).map((t) => t.t), override: port.override || null,
+      prev: { occupant: port.occupant, confidence: port.confidence, since: port.since ? Date.parse(port.since) : null }, fallback: fb.length === 1 ? fb[0].id : null, nowMs, afterMs: dc.after_minutes * MIN_MS });
+    if (r.clearOverride) { log(`${name}: unplugged; manual choice ${port.override.value} cleared`); delete port.override; }
+    res[name] = { r, ev, port, last, plugged };
+  }
+  // a vehicle chosen by hand on one port is not on another one
+  const manual = {}; for (const [name, x] of Object.entries(res)) if (x.r.confidence === 'manual' && x.r.occupant && x.r.occupant !== 'unknown') manual[x.r.occupant] = name;
+  for (const [name, x] of Object.entries(res)) if (x.r.confidence !== 'manual' && manual[x.r.occupant] && manual[x.r.occupant] !== name) x.r = { ...x.r, occupant: 'unknown', confidence: 'conflict' };
+  for (const [name, { r, ev, port, last, plugged }] of Object.entries(res)) {
+    const v = config.vehicles.find((x) => x.id === r.occupant);
+    Object.assign(port, { status: last ? last.s : null, plugged, status_entity: config.chargers[name].status, updated: new Date(nowMs).toISOString(), override: port.override,
+      occupant: r.occupant === undefined ? (r.confidence === 'detecting' ? undefined : port.occupant) : r.occupant, vehicle: v ? v.id : null, vehicle_name: v ? v.name : null,
+      confidence: r.confidence, since: r.since ? new Date(r.since).toISOString() : port.since || null, plug_delay_s: ev && ev.vehicle && r.occupant === ev.vehicle && r.confidence !== 'manual' ? Math.round(ev.delta_ms / 1000) : null,
+      candidates: ev && !ev.vehicle ? ev.candidates : undefined });
+    if (r.occupant === undefined) delete port.occupant;
+    if (ev && ev.vehicle) { const key = `${name}@${ev.at}`; if (state.detect_done[key] !== ev.vehicle) { state.detect_done[key] = ev.vehicle; const vv = config.vehicles.find((x) => x.id === ev.vehicle); log(`${name}: ${vv ? vv.name : ev.vehicle} plugged in at ${new Date(ev.at).toISOString()} (its plug sensor ${Math.round(ev.delta_ms / 1000)} s after the charger${ev.late ? ', after the window: low confidence' : ''}${ev.alternatives && ev.alternatives.length ? '; unclaimed alternative ' + ev.alternatives.map((a) => `${a.vehicle} ${Math.round(a.delta_ms / 1000)} s`).join(', ') + (ev.ambiguous ? ' - ambiguous' : '') : ''})`); } }
+    // the charger history follows the port
+    if (r.occupant !== undefined && r.occupant !== null && r.since && (dc.auto_assign || r.confidence === 'manual')) {
+      const why = r.confidence === 'manual' ? 'set by hand' : `detected on ${name}, ${r.confidence}`;
+      if (v) assign(v, name, r.since, why);
+      for (const o of config.vehicles) if (o !== v && chargerOf(o) === name) assign(o, null, r.since, `${r.occupant === 'unknown' ? 'another vehicle' : v.name} on ${name}`);
     }
-    const key = `${name}@${ev.at}`;
-    if (ev.vehicle) {
-      const v = config.vehicles.find((x) => x.id === ev.vehicle);
-      Object.assign(port, { vehicle: v.id, vehicle_name: v.name, confidence: ev.ambiguous ? 'medium' : 'high', since: new Date(ev.at).toISOString(), plug_delay_s: Math.round(ev.delta_ms / 1000) });
-      if (state.detect_done[key] === v.id) continue;
-      state.detect_done[key] = v.id;
-      log(`${name}: ${v.name} plugged in at ${new Date(ev.at).toISOString()} (its plug sensor followed ${Math.round(ev.delta_ms / 1000)} s later${ev.alternatives.length ? '; unclaimed alternative ' + ev.alternatives.map((a) => `${a.vehicle} ${Math.round(a.delta_ms / 1000)} s`).join(', ') + (ev.ambiguous ? ' - ambiguous' : '') : ''})`);
-      if (!dc.auto_assign || chargerOf(v, states) === name) continue;
-      const sel = states.find((s) => s.entity_id === v.charger_select); const opt = sel && (sel.attributes.options || []).find((o) => String(o).toLowerCase() === name.toLowerCase());
-      if (!opt) { log(`${v.name}: ${v.charger_select || 'no charger helper'} has no option "${name}"; not switched`); continue; }
-      try { await haService('input_select', 'select_option', { entity_id: v.charger_select, option: opt }); sel.state = opt; noteAssignment(v, name, ev.at); log(`${v.name}: charger helper -> ${opt} (detected on plug-in)`); }
-      catch (e) { log(`${v.name}: could not switch ${v.charger_select}: ${e.message}`); }
-    } else {
-      Object.assign(port, { vehicle: null, vehicle_name: null, confidence: null, since: new Date(ev.at).toISOString(), candidates: ev.candidates });
-      const age = nowMs - ev.at;
-      if (state.detect_done[key] || age < dc.refresh_after_minutes * 60000 || age > HOUR) continue;
-      state.detect_done[key] = 'refresh';
-      for (const v of vehicles) {
-        if (!v.refresh_button || D.binaryOn(stateOf(states, v.plug_entity))) continue;
-        try { await haService('button', 'press', { entity_id: v.refresh_button }); log(`${name}: plug-in at ${new Date(ev.at).toISOString()} unclaimed; asked ${v.name} for fresh data (${v.refresh_button})`); }
-        catch (e) { log(`${v.name}: refresh failed: ${e.message}`); }
+    // a plug-in nobody claimed: ask unplugged vehicles with a refresh button for fresh data, once
+    if (dc.enabled && ev && !ev.vehicle && !port.override) {
+      const age = nowMs - ev.at, key = `${name}@${ev.at}`;
+      if (!state.detect_done[key] && age >= dc.refresh_after_minutes * MIN_MS && age <= HOUR) {
+        state.detect_done[key] = 'refresh';
+        for (const vv of vehicles) {
+          if (!vv.refresh_button || D.binaryOn(stateOf(states, vv.plug_entity))) continue;
+          try { await haService('button', 'press', { entity_id: vv.refresh_button }); log(`${name}: plug-in at ${new Date(ev.at).toISOString()} unclaimed; asked ${vv.name} for fresh data (${vv.refresh_button})`); }
+          catch (e) { log(`${vv.name}: refresh failed: ${e.message}`); }
+        }
       }
     }
   }
   for (const k of Object.keys(state.detect_done)) if (nowMs - +k.split('@')[1] > 2 * DAY) delete state.detect_done[k];
+}
+/** Port select command (MQTT select or the panel): a vehicle name / id, 'Unknown', 'None' or 'Auto'. */
+function portCommand(name, value) {
+  const port = state.ports[name] || (state.ports[name] = {}); const val = String(value || '').trim(); const low = val.toLowerCase();
+  const v = config.vehicles.find((x) => x.name.toLowerCase() === low || x.id === low);
+  if (low === 'auto' || (low === 'none' && port.plugged === false)) { delete port.override; if (port.confidence === 'manual') { port.occupant = undefined; port.confidence = null; } log(`${name}: back to detection`); }
+  else if (v || low === 'unknown' || low === 'none') {
+    const value = v ? v.id : 'unknown';
+    if (v) for (const [n, p] of Object.entries(state.ports)) if (n !== name && p.override && p.override.value === v.id) { delete p.override; log(`${n}: manual choice ${v.name} moved to ${name}`); }
+    port.override = { value, at: Date.now() }; log(`${name}: set by hand to ${v ? v.name : 'unknown vehicle'}${port.plugged === false ? ' (applies to the next plug-in)' : ''}`);
+  } else { log(`${name}: ignored port command "${val}"`); return false; }
+  saveState(); requestPoll(); return true;
 }
 const chargerAt = (v) => { const list = state.assignments[v.id] || []; return (h) => { const t = h * HOUR; let c = null; for (const a of list) { if (a.at <= t) c = a.charger; else break; } return c; }; };
 
@@ -403,18 +427,29 @@ async function publishVehicle(v, set, metrics, live) {
   for (const [key, m] of Object.entries(metrics)) await mqttPub(`${base}/${key}`, { ...m, vehicle: v.name, charger: live.charger, fuel_grade: set.grade, mpg_equivalent: set.mpg, capacity_kwh: set.capacity, charge_efficiency: v.charge_efficiency, away_rate: config.away_rate, kwh_per_gallon: set.energy.kwhPerGal, engine_efficiency: set.energy.engineEff, ev_drivetrain_efficiency: set.energy.evEff, regen_share: set.energy.regen, updated: new Date().toISOString() });
   await mqttPub(`${base}/now`, live);
 }
-/** One "Chargers" device: sensor.<prefix>_charger_<port>_vehicle = detected vehicle name | unknown (plugged, nobody claimed it) | none. */
+/**
+ * One "Chargers" device with select.<prefix>_charger_<port>_vehicle per port: state = the vehicle on it, Unknown
+ * (something else / unclaimed) or None (free); choosing an option sets it by hand until the port is unplugged, Auto
+ * goes back to detection. The previous sensor.<prefix>_charger_<port>_vehicle components are removed.
+ */
+function portOption(p) {
+  if (p.override && p.plugged === false) { const v = config.vehicles.find((x) => x.id === p.override.value); return v ? v.name : 'Unknown'; }
+  if (p.vehicle_name) return p.vehicle_name;
+  return p.occupant === 'unknown' || (p.plugged && p.confidence === 'detecting') ? 'Unknown' : p.plugged ? 'Unknown' : 'None';
+}
 async function publishPorts() {
   const pre = config.entity_prefix, dev = 'ev_stats_chargers', comps = {};
   const names = Object.keys(config.chargers).filter((n) => config.chargers[n].status); if (!names.length) return;
-  for (const n of names) comps[slug(n)] = { platform: 'sensor', name: `${n} vehicle`, unique_id: `ev_stats_charger_${slug(n)}_vehicle`, default_entity_id: `sensor.${pre}_charger_${slug(n)}_vehicle`, state_topic: `ev/stats/ports/${slug(n)}`, value_template: "{{ value_json.vehicle_name if value_json.vehicle_name else ('unknown' if value_json.plugged else 'none') }}", json_attributes_topic: `ev/stats/ports/${slug(n)}`, icon: 'mdi:ev-station' };
-  if (!discoveryFresh.has(dev) || JSON.stringify(Object.keys(comps)) !== JSON.stringify(state.published[dev] || [])) {
+  const options = [...config.vehicles.map((v) => v.name), 'Unknown', 'None', 'Auto'];
+  for (const n of names) comps[`${slug(n)}_vehicle`] = { platform: 'select', name: `${n} vehicle`, unique_id: `ev_stats_charger_${slug(n)}_vehicle_select`, default_entity_id: `select.${pre}_charger_${slug(n)}_vehicle`, state_topic: `ev/stats/ports/${slug(n)}`, value_template: '{{ value_json.option }}', command_topic: `ev/stats/ports/${slug(n)}/set`, options, json_attributes_topic: `ev/stats/ports/${slug(n)}`, icon: 'mdi:ev-station' };
+  const sig = JSON.stringify([Object.keys(comps), options]);
+  if (!discoveryFresh.has(dev) || sig !== JSON.stringify(state.published[dev + ':sig'] || null)) {
     const payload = { device: { identifiers: [dev], name: 'Chargers', manufacturer: 'geeojr/ha-addons', model: 'EV Stats add-on', sw_version: VERSION }, origin: { name: 'ev-stats', sw_version: VERSION, support_url: 'https://github.com/geeojr/ha-addons' }, components: { ...comps } };
-    for (const k of state.published[dev] || []) if (!comps[k]) payload.components[k] = { platform: 'sensor' };
+    for (const k of state.published[dev] || []) if (!comps[k]) payload.components[k] = { platform: k.endsWith('_vehicle') ? 'select' : 'sensor' }; // removes components no longer configured (1.2.x port sensors)
     await mqttPub(`homeassistant/device/${dev}/config`, payload);
-    state.published[dev] = Object.keys(comps); discoveryFresh.add(dev);
+    state.published[dev] = Object.keys(comps); state.published[dev + ':sig'] = JSON.parse(sig); discoveryFresh.add(dev);
   }
-  for (const n of names) await mqttPub(`ev/stats/ports/${slug(n)}`, { port: n, ...(state.ports[n] || { plugged: null, vehicle: null, vehicle_name: null }) });
+  for (const n of names) { const p = state.ports[n] || { plugged: null }; await mqttPub(`ev/stats/ports/${slug(n)}`, { port: n, option: portOption(p), plugged: p.plugged ?? null, status: p.status ?? null, vehicle: p.vehicle || null, vehicle_name: p.vehicle_name || null, confidence: p.confidence || null, since: p.since || null, plug_delay_s: p.plug_delay_s ?? null, manual: p.override ? { value: p.override.value, at: new Date(p.override.at).toISOString() } : null, candidates: p.candidates || null, updated: p.updated || null }); }
 }
 async function publishFuel(prices) {
   const pre = config.fuel.entity_prefix, dev = 'ev_stats_fuel', comps = {};
@@ -530,8 +565,7 @@ async function poll(opts = {}) {
       const cheap = D.cheapWindow(plans, tz, now);
       for (const v of config.vehicles) {
         if (!v.enabled || !v.odometer) continue;
-        const set = vehicleSettings(v, states); const charger = chargerOf(v, states);
-        noteAssignment(v, charger, now);
+        const set = vehicleSettings(v, states); const charger = chargerOf(v);
         if (!set.capacity) log(`${v.name}: no battery capacity configured; battery energy will be 0`);
         const rawFrom = now - config.raw_days * DAY;
         if (opts.rebuild === v.id || opts.rebuild === 'all' || !rollup[v.id] || !Object.keys(rollup[v.id]).length) {
@@ -540,8 +574,11 @@ async function poll(opts = {}) {
           state.backfilled[v.id] = { at: now, from: config.backfill_from };
           state.stats_cursor[v.id] = earliestHour([v.id]);
         } else {
-          await recompute(w, v, set, R.hourOf(now - config.recent_hours * HOUR) * HOUR, now);
+          // recent hours, plus everything since a charger history change (detection / a port select) within the raw days
+          const from = Math.max(now - config.raw_days * DAY, Math.min(now - config.recent_hours * HOUR, state.recompute_from[v.id] ?? Infinity));
+          for (let a = R.hourOf(from) * HOUR; a < now; a += 3 * DAY) await recompute(w, v, set, a, Math.min(now, a + 3 * DAY));
         }
+        delete state.recompute_from[v.id];
         const sc = config.session_check;
         const lowV = R.validateSessions(rollup[v.id], v.charge_efficiency, sc.enabled ? { minKwh: sc.min_kwh, minPeakKwh: sc.min_peak_kwh, matchFraction: sc.match_fraction, lagHours: sc.lag_hours } : { minKwh: Infinity });
         const lowA = R.settleAway(rollup[v.id], v.charge_efficiency, sc.lag_hours);
@@ -576,8 +613,30 @@ async function poll(opts = {}) {
   } catch (e) {
     lastErr = e.message; log('poll failed:', e.message);
     state.last = { ...(state.last || {}), at: Date.now(), error: e.message };
-  } finally { saveRollup(); saveState(); polling = false; }
+  } finally { saveRollup(); saveState(); polling = false; if (repoll) { repoll = false; setTimeout(() => poll().catch(() => {}), 1000); } }
   return state.last;
+}
+let repoll = false;
+/** Poll soon (now, or right after the poll that is running). */
+function requestPoll() { if (polling) repoll = true; else setTimeout(() => poll().catch(() => {}), 200); }
+
+/**
+ * Port select commands: HA publishes the chosen option to ev/stats/ports/<port>/set. Received through HA's websocket
+ * (mqtt/subscribe), so the add-on needs no MQTT client of its own; reconnects after 30 s when the connection drops.
+ */
+async function listenCommands() {
+  for (;;) {
+    try {
+      const w = haWS(); await w.ready;
+      await w.subscribe({ type: 'mqtt/subscribe', topic: 'ev/stats/ports/+/set' }, (e) => {
+        const sl = String(e.topic || '').split('/')[3]; const name = Object.keys(config.chargers).find((n) => slug(n) === sl);
+        if (name) portCommand(name, e.payload); else log(`port command for unknown port ${sl}`);
+      });
+      log('listening for port selects');
+      await w.closed; log('port select listener disconnected');
+    } catch (e) { log('port select listener:', e.message); }
+    await new Promise((r) => setTimeout(r, 30000));
+  }
 }
 
 // ---------- helpers in HA ----------
@@ -620,6 +679,7 @@ async function api(req, res, url) {
   if (req.method === 'GET' && p === '/api/sessions') { const v = config.vehicles.find((x) => x.id === url.searchParams.get('vehicle')); return v ? json(res, 200, { vehicle: v.id, sessions: sessionList(v, Number(url.searchParams.get('limit')) || 200) }) : json(res, 404, { error: 'unknown vehicle' }); }
   if (req.method === 'GET' && p === '/api/status') return json(res, 200, { last: state.last, error: lastErr, assignments: state.assignments, ports: state.ports, port_timeline: portTimeline(), backfilled: state.backfilled, log: state.log.slice(0, 60), version: VERSION, uptime_s: Math.round(process.uptime()), tz: haTz, fuel: { weekly_at: fuel.weekly_at, aaa_at: fuel.aaa_at, eia_error: fuel.eia_error, aaa_error: fuel.aaa_error, areas: fuel.aaa && fuel.aaa.areas, weeks: fuel.weekly.regular ? fuel.weekly.regular.length : 0, days: Object.keys(fuel.daily).length }, polling });
   if (req.method === 'POST' && p === '/api/poll') return json(res, 200, await poll());
+  if (req.method === 'POST' && p === '/api/port') { const b = await readBody(req); const name = Object.keys(config.chargers).find((n) => n === b.port); if (!name) return json(res, 400, { error: 'unknown port' }); const ok = portCommand(name, b.value); if (ok && config.mqtt.enabled) await publishPorts().catch(() => {}); return json(res, ok ? 200 : 400, { ok, port: state.ports[name] }); }
   if (req.method === 'POST' && p === '/api/rebuild') { const b = await readBody(req); return json(res, 200, await poll({ rebuild: b.vehicle || 'all' })); }
   if (req.method === 'POST' && p === '/api/fuel/refresh') return json(res, 200, await poll({ fuelForce: true }));
   if (req.method === 'POST' && p === '/api/helpers') { const states = await haStates(); return json(res, 200, { created: await ensureHelpers(states), vehicles: config.vehicles }); }
@@ -676,5 +736,6 @@ if (require.main === module) (async () => {
   await poll();
   if (ONCE) { log('once: done'); process.exit(0); }
   schedule();
+  if (config.mqtt.enabled) listenCommands();
   server.listen(config.port, '0.0.0.0', () => log(`panel on http://0.0.0.0:${config.port}/  poll every ${config.poll_minutes} min`));
 })();

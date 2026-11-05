@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.0
+- The add-on keeps each vehicle's port itself; the `input_select` charger helpers are no longer read or switched and can be deleted (the vehicle setting is gone; the charger history carries on unchanged). Detection writes the history from the plug-in time and the affected hours are recomputed.
+- `select.<prefix>_charger_<port>_vehicle` per port replaces `sensor.<prefix>_charger_<port>_vehicle`: state = the vehicle on it, `Unknown` or `None`. Choosing a vehicle or `Unknown` is a manual choice (confidence `manual`) that beats detection and is cleared when that port is unplugged; chosen while the port is free, it applies to the next plug-in. `Auto` goes back to detection. The same chooser is in the panel's Ports table (`POST /api/port`). Commands arrive over HA's websocket, no MQTT client needed.
+- A port taken by another vehicle (detected, unclaimed or chosen by hand) takes it off the vehicle that had it, so a guest car's charge is never booked on it.
+- A plug report that arrives after the window but before the port is unplugged is matched with `low` confidence instead of leaving the port unclaimed.
+
 ## 1.2.1
 - Port detection confidence: a vehicle plug-in that another port already claimed no longer counts as an alternative, and the match is `medium` only when an unclaimed alternative was nearly as close (within 2 minutes). A 2-second R1S match was being marked medium because the Audi's refresh-nudged plug report 11 minutes later fell inside the window.
 
