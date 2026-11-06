@@ -165,12 +165,23 @@ async function importStats(reads, sid, defaultName, defaultUnit) {
     const rows = [...reads.entries()].sort((a, b) => a[0] - b[0]);
     if (!rows.length) return { imported: 0 };
     const firstMs = rows[0][0];
-    // baseline: the running sum just before our first row (monthly buckets return the sum at bucket end)
-    const base = await ha.call({ type: 'recorder/statistics_during_period', statistic_ids: [sid], period: 'month', types: ['sum'],
-      start_time: new Date(firstMs - 400 * DAY).toISOString(), end_time: new Date(firstMs).toISOString() });
-    const prev = (base[sid] || []).filter((r) => r.start < firstMs && r.sum != null);
-    let sum = prev.length ? prev[prev.length - 1].sum : 0;
-    log(`${sid}: baseline sum before ${new Date(firstMs).toISOString()}: ${sum.toFixed(3)} ${unit || ''} (${prev.length ? 'from existing history' : 'no earlier data'})`);
+    // baseline: the running sum of the last hourly row before our first row. (Not a monthly bucket:
+    // a bucket's sum is the sum at the END of that month, so the bucket holding firstMs already
+    // includes the rows being re-imported and the total would jump by that much at firstMs.)
+    const baseline = async () => {
+      const h = await ha.call({ type: 'recorder/statistics_during_period', statistic_ids: [sid], period: 'hour', types: ['sum'],
+        start_time: new Date(firstMs - 35 * DAY).toISOString(), end_time: new Date(firstMs).toISOString() });
+      const hp = (h[sid] || []).filter((r) => r.start < firstMs && r.sum != null);
+      if (hp.length) return { sum: hp[hp.length - 1].sum, from: `hour ${new Date(hp[hp.length - 1].start).toISOString()}` };
+      // long gap: whole months that ended before firstMs only
+      const m = await ha.call({ type: 'recorder/statistics_during_period', statistic_ids: [sid], period: 'month', types: ['sum'],
+        start_time: new Date(firstMs - 400 * DAY).toISOString(), end_time: new Date(firstMs).toISOString() });
+      const mp = (m[sid] || []).filter((r) => r.end <= firstMs && r.sum != null);
+      return mp.length ? { sum: mp[mp.length - 1].sum, from: `month ending ${new Date(mp[mp.length - 1].end).toISOString()}` } : { sum: 0, from: null };
+    };
+    const b = await baseline();
+    let sum = b.sum;
+    log(`${sid}: baseline sum before ${new Date(firstMs).toISOString()}: ${sum.toFixed(3)} ${unit || ''} (${b.from ? 'from ' + b.from : 'no earlier data'})`);
     // Existing rows inside our span whose hour has no Opower read (e.g. old daily rows on a day
     // Opower now reports nothing for) would keep a stale running total and show up as a false
     // spike. Overwrite them with a zero-change row at the correct running total instead.

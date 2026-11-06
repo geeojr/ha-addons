@@ -1,5 +1,5 @@
 name: Evergy Sync
-version: "1.0.1"
+version: "1.0.2"
 slug: evergy_sync
 description: Hourly electricity usage from Evergy (Opower) into Home Assistant long-term statistics, priced with your TOU rate plans
 url: https://github.com/geeojr/ha-addons/tree/main/evergy-sync
